@@ -1,0 +1,74 @@
+# node-redlock risk hard rules（依實際目錄結構撰寫，非複製範本）。
+#
+# 觸及下列任一 pattern → risk = 2，無裁量空間（docs/06 §3.2、docs/27 §7.2）。
+# H1–H4 源自 Gartner G00843405；H5–H7 為本專案擴充（guardrail 自我保護與不可逆操作）。
+#
+# 此檔位於 .github/ 之下，故受自身的 H5 保護；agent 不得修改約束自己的規則（docs/05 §1.1）。
+#
+# 裁定紀錄：2026-09-13 由 philipz 審核 PR #2（Issue #1，agent-onboard）的提案後搬至正位。
+# 一併裁定：唯一實作檔 src/index.ts **不**納入 H4/H7（理由見下方 H4、H7 註解）——本 repo
+# 只有一個原始檔，納入等於每次程式變更都強制 risk=2；硬規則常態觸發反而會訓練審查者
+# 略過警訊（docs/16 §5.3）。核心變更的人類把關改由 catalog-info.yaml 的
+# factory.io/agent-automerge: "false" 保證（每顆 PR 都需人類核准）。
+#
+# 掃描依據（2026-09-13，agent-playground/node-redlock@software-factory）：
+#   `git ls-files` 顯示：src/index.ts（770 行實作）、src/single.test.ts、src/multi.test.ts、
+#   src/index.ts import 的 `crypto` 僅用於 randomBytes/createHash；
+#   package.json（yarn + tsc + ava + ioredis）；.github/workflows/{ci,codeql-analysis}.yml；
+#   docker-compose.yml（23 個 redis 測試容器）與 cluster.redis.conf（測試用）。
+#   全 repo **無** authn/authz、無金流、無 PII/憑證、無 DB/migration/schema、無 openapi/proto。
+#
+# 原則（docs/16 §5.3）：硬規則若經常誤報，會訓練審查者略過警訊而削弱防護。
+# 因此本清單只寫入掃描確實命中的結構；沒有對應結構的規則留空並註明待人類確認。
+hard_rules:
+  # H1 — 授權/認證邏輯：掃描未發現，人類已確認留空（2026-09-13）。
+  #   全 repo 無 authn/authz/session/權限程式碼；grep auth|login|session|permission
+  #   於 src/ 無命中。本 repo 的「鎖」是資源互斥，不是存取控制。
+  H1: []
+
+  # H2 — 財務計算：掃描未發現，人類已確認留空（2026-09-13）。
+  #   無 payment/billing/invoice/ledger/settlement 等程式碼或設定。
+  H2: []
+
+  # H3 — 敏感資料處理：掃描未發現，人類已確認留空（2026-09-13）。
+  #   無 PII、無憑證/密鑰檔（無 .env、無 config/），CI 未使用 secrets。
+  #   ⚠️ src/index.ts import 了 `crypto`（randomBytes 產生隨機 lock 值、createHash 算 Lua
+  #   script 的 sha1），這是**鎖的識別碼**，不是加密或密鑰處理。因此**不可**套用
+  #   `**/*token*`、`**/*crypto*` 這類樣式——本 repo 沒有憑證檔，套用只會誤中未來的無關檔
+  #   （docs/16 §5.3 的 tokens.css 誤報教訓）。
+  H3: []
+
+  # H4 — systems of record 或共用模組：掃描未發現，人類已裁定留空（2026-09-13）。
+  #   無 src/shared/**、src/core/**、libs/** 等內部共用模組目錄（本 repo 無多模組結構）。
+  #   候選待裁定：唯一實作檔 src/index.ts 被 single.test.ts 與 multi.test.ts 匯入，語意上
+  #   最接近「共用模組」。但它是本 repo 唯一的原始檔——若納入 H4，幾乎每次程式變更都會被
+  #   強制 risk=2。**裁定結果：不納入**——常態觸發的硬規則會訓練審查者略過警訊
+#   （docs/16 §5.3），把關改依賴 agent-automerge="false" 的逐 PR 人類核准。
+  H4: []
+
+  # H5 — guardrail 自身（無條件寫入，與 repo 結構無關）。
+  #   命中的實際檔案：
+  #     .github/**  → .github/workflows/ci.yml、.github/workflows/codeql-analysis.yml、
+  #                    .github/dependabot.yml
+  #     catalog-info.yaml → repo 根目錄（2026-09-13 已搬至正位）
+  #     CODEOWNERS  → 本 repo 目前尚無；保留以防未來新增
+  #     .dsh/skills/** → 本 repo 目前尚無；保留為未來技能保護
+  H5:
+    - ".github/**"
+    - "CODEOWNERS"
+    - "catalog-info.yaml"
+    - ".dsh/skills/**"
+
+  # H6 — 資料庫 schema 遷移（不可逆）：掃描未發現，人類已確認留空（2026-09-13）。
+  #   無 migrations/、無 *.sql、無 ORM schema；本 repo 無資料庫（狀態全在外部 redis）。
+  H6: []
+
+  # H7 — 對外 API 破壞性變更：掃描未發現定義檔，人類已裁定留空（2026-09-13）。
+  #   無 api/**、*.proto、openapi.yaml。
+  #   對外 API 實際上由 src/index.ts 的 exports（Redlock/Lock/ExecutionStats/…）與
+  #   package.json 的 main/module/types/exports 定義；兩者皆**未**列入 H7：
+  #     - 列入 src/index.ts → 每次程式變更都強制 risk=2（見 H4 候選）。
+  #     - 列入 package.json → devDependencies 更新（dependabot）也會誤觸 H7，屬典型誤報。
+  #   **裁定結果：兩者皆不納入**（與 H4 同一理由）。破壞性 API 變更的把關依賴人類審查，
+#   而非路徑硬規則——docs/06 §8 局限 3 已載明「路徑比對無法涵蓋語意風險」。
+  H7: []

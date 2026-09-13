@@ -1,3 +1,6 @@
 /dist
 /node_modules
+# Apalache 的產物目錄（機器產生，不應被重新格式化）
 /_apalache-out
+# 反例軌跡：由 `quint verify --out-itf` 產生的機器產物，非手寫檔案
+/specs/traces

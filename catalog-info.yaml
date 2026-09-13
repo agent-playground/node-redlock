@@ -1,0 +1,84 @@
+# node-redlock 工廠納管設定（Backstage catalog entry）。
+#
+# 三軸由**人類裁定**，agent 不得修改（docs/05 §1.1 核心不變量）。
+# 裁定紀錄：2026-09-13 由 philipz 裁定為 tactical / medium / low（總分 1 → on-loop），
+# 依據 PR #2（Issue #1，agent-onboard）產出的建議與證據——三項建議全數採納。
+# 一併裁定：唯一實作檔 src/index.ts **不**納入 H4/H7 硬規則（見 .github/factory/risk-paths.yml
+# 的 H4/H7 註解）——納入會讓硬規則常態觸發，反而訓練審查者略過警訊（docs/16 §5.3）。
+#
+# 下方每一軸保留當初的理由與證據，供日後重新評級時對照。
+#
+# 三軸合法值（docs/27 §7.2；來源 src/scoring/types.ts）：
+#   business-criticality: tactical | operational | strategic
+#   risk-profile:         low | medium | high
+#   complexity:           low | medium | high
+# ⚠️ 值缺席或非法一律 fail-safe 計為 2（docs/27 §7.2 實測案例）。
+#
+# 掃描依據（2026-09-13，agent-playground/node-redlock@software-factory）：
+#   git ls-files 顯示實作僅 src/index.ts（770 行）+ 測試 src/single.test.ts（550 行）、
+#   src/multi.test.ts（329 行）；建置/測試 = yarn + tsc + ava；ioredis 為執行期相依；
+#   docker-compose.yml 有 23 個 redis 測試容器；無 migrations/、schema、openapi、proto。
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: node-redlock
+  description: node.js redlock 分散式鎖實作（TypeScript；ioredis；npm 套件 redlock）
+  annotations:
+    github.com/project-slug: agent-playground/node-redlock
+
+    # --- Factory oversight axes（docs/06 §3）--------------------------------
+    # 每一軸：建議值 + 理由 + 證據；格式參考 docs/16 §5.1。
+
+    # 裁定：tactical (0)　（建議值 = 裁定值）
+    # 證據：Issue 定義的使用者是「agent-playground 內部實驗環境」；git ls-files 無任何
+    #   部署/服務定義（docker-compose.yml 只起測試用 redis，非應用服務）、無客戶端
+    #   程式碼、無營收/計費邏輯；工廠運作不依賴此 repo。
+    # 為何不是 operational (1)：它不是支撐同仁作業的內部業務系統，而是獨立 npm 函式庫；
+    #   故障不會擋下任何工廠流程（對照 docs/16 §5.1 factory-scoreboard 也評 tactical）。
+    # 為何不是 strategic (2)：此 fork 本身非面向客戶的服務。**反面證據**：package.json
+    #   的 `name: redlock`、`repository: mike-marcacci/node-redlock`、版本 `v5.0.0-beta.2`
+    #   顯示它源自對外發佈的 npm 套件（Issue 稱「對外發佈為 npm 套件 redlock」）。若人類
+    #   認定本 fork 就是下游使用的 redlock，故障即造成信譽損失，應改判 strategic
+    #   ——見 README「待裁定事項 1」。
+    # 裁定補充：已查核本 repo 的 .github/workflows/ 只有 ci.yml 與 codeql-analysis.yml，
+    #   **無任何 npm publish / release 步驟**，故本 fork 不對外發佈——上方「待裁定事項 1」
+    #   的 strategic 疑慮不成立，維持 tactical。
+    factory.io/business-criticality: tactical # tactical | operational | strategic
+
+    # 裁定：medium (1)　（建議值 = 裁定值）
+    # 證據：src/index.ts 是純功能程式碼（acquire/release/extend/using + quorum 投票 +
+    #   drift/retry 計算），且測試覆蓋完整（兩個 ava 測試檔合計 879 行）。掃描未發現
+    #   H1–H7 對應結構：無 authn/authz、無金流、無 PII/憑證/加密、無 DB migration/schema、
+    #   無 openapi/proto（逐條見 risk-paths.yml 的註解）。
+    # 為何不是 low (0)：low 的判準是「純文件/註解/格式化/測試新增，不改執行邏輯」；本 repo
+    #   核心是並行/時序邏輯，任何實質變更都會改動行為。
+    # 為何不是 high (2)：high 由硬性規則觸發，而本 repo 無 H1–H4/H6/H7 對應路徑。**但請注意**
+    #   其失效模式是靜默的（Issue：quorum 判定或 extend() 出錯，可能在鎖已過期後仍被認為
+    #   持有）——若人類認為唯一實作檔 src/index.ts（亦為對外 API 的全部）應納入 H4/H7，
+    #   變更即被強制拉到 high——見 README「待裁定事項 2」。
+    factory.io/risk-profile: medium # low | medium | high
+
+    # 裁定：low (0)　（建議值 = 裁定值）
+    # 證據：實作只有單一檔案 src/index.ts（單一模組，770 行）；無跨模組目錄、無共用抽象層、
+    #   無服務。docker-compose.yml 的 23 個 redis 容器是測試 fixture（single/multi instance、
+    #   single/multi cluster 四種拓撲），不是本 repo 部署的服務。
+    # 為何不是 medium (1)：medium 需要「跨數個模組」或新增元件；本 repo 只有單一實作模組。
+    #   對照 docs/16 §5.1：factory-scoreboard 有 15 個原始檔、6 個端點仍評 low。
+    # 為何不是 high (2)：無跨服務/跨系統協調、無新架構模式、無共用抽象變更。演算法本身很
+    #   細膩（quorum/時序），但那是 risk-profile 的範疇，不是架構複雜度。
+    factory.io/complexity: low # low | medium | high
+
+    # 新納管 repo 不預設開放自動合併（docs/06 §4.1）；須加引號避免 YAML 解讀為 boolean
+    # （src/cli/factory-score.ts 註解）。
+    factory.io/agent-automerge: "false"
+
+    # --- 技術棧規範（依實際掃描，非風險裁定）--------------------------------
+    # package.json：typescript ~4.6.2、ava ^4.1.0、ioredis ^4.28.5；scripts.build = tsc；
+    # scripts.test = ava（在 dist/esm 執行）。
+    factory.io/stack: typescript
+    factory.io/test-framework: ava
+    # 無 factory.io/quint-spec：掃描未發現 specs/ 或任何 .qnt 檔案，故不登錄此 annotation。
+spec:
+  type: library
+  lifecycle: experimental
+  owner: group:default/factory-team
