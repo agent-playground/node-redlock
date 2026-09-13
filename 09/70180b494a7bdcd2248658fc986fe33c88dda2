@@ -1,0 +1,22 @@
+.prettierignore
+  h_1b119f25eaf333 3-6
+specs/oracle/README.md
+  h_1b119f25eaf333 1-98
+specs/oracle/counterexamples.test.mjs
+  h_1b119f25eaf333 1-323
+specs/oracle/fakeRedis.mjs
+  h_1b119f25eaf333 1-193
+specs/oracle/lua-parity.test.mjs
+  h_1b119f25eaf333 1-223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0970180b494a7bdcd2248658fc986fe33c88dda2",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
