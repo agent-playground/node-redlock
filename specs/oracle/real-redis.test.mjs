@@ -67,7 +67,14 @@ async function pollUntil(pred, timeoutMs, label) {
 
 const available = await tryConnect();
 const skip = !available;
-if (skip) console.error(`[real-redis] 連不上 Redis ${HOST}:${PORT} —— 全部略過。`);
+if (skip) {
+  const msg = `[real-redis] 連不上 Redis ${HOST}:${PORT}`;
+  // CI 下**不得**略過：node --test 在 skip 時仍然 exit 0（見 specs/README.md R3）。
+  if (process.env.CI) {
+    throw new Error(`${msg}；CI 環境下必須提供 Redis（設定 ORACLE_REDIS_PORT）`);
+  }
+  console.error(`${msg} —— 全部略過。`);
+}
 
 /** 真正持有該 value 的節點數（直接向真 Redis 查詢）。 */
 async function realCoverage(nodes, value) {

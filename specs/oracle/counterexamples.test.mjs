@@ -139,6 +139,129 @@ test("F2: retry 被『自己上一輪留下的 key』擋住（selfBlocked）", a
   );
   // NOSCRIPT fallback 路徑確實被走到（src/index.ts:574-595）
   assert.ok(log.evalsha > 0 && log.eval > 0, "evalsha→NOSCRIPT→eval fallback 被執行");
+
+  // --- 判別力：擋住我的必須是**同一顆**我上一輪寫過的節點 ---
+  // 「acquire 遇到既有 key 就失敗」是鎖的定義，不是缺陷；能證明 F2 的只有
+  // 「第 1 次 attempt 拿到 node1，第 2 次 attempt 被 node1 上自己的 key 擋住」。
+  const node1 = log.acquire.filter((e) => e.node === "node1");
+  assert.ok(node1.some((e) => e.granted), "第 1 次 attempt 在 node1 上取得（vote for）");
+  assert.ok(
+    node1.some((e) => e.selfBlocked),
+    "第 2 次 attempt 在**同一顆** node1 上被自己的 value 擋住"
+  );
+  // 反之，node2/node3 的擋住者是 FOREIGN（別人的鎖），不是自己 —— 兩類必須分開，
+  // 否則「自我阻塞」與「一般競爭」在斷言上無法區分。
+  const foreignBlocked = log.acquire.filter((e) => e.blocker === "FOREIGN");
+  assert.ok(foreignBlocked.length > 0, "node2/node3 由 FOREIGN 擋住（一般競爭）");
+
+  // --- 忠實度界線（Q9b）：危害只存在於「單次 acquire() 的重試窗口之內」---
+  // acquire() 的失敗路徑會做補償釋放（src/index.ts:330-340），所以殘留 key
+  // **不會**存活到呼叫返回之後。模型若允許 client 停在 IDLE 且帶著殘留 key
+  // 自由停留，就是一個真實到不了的過度近似。
+  assert.equal(nodes[0].get(RES), null, "補償釋放已清掉 node1 的殘留 key");
+  assert.ok(
+    log.release.some((e) => e.node === "node1" && e.deleted === 1),
+    "node1 的殘留 key 是由 acquire() 的補償釋放清除的"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F6 — using() 的 timer 洩漏：routine 在「續期仍在途中」時結束
+// 對應建模決策 9：F6 刻意不在 Quint 內建模（需 JS event loop），改用本測試涵蓋。
+//
+// 機制（src/index.ts:716-765）：
+//   queue() 設定 timeout → extend() 一開頭把 timeout 設成 undefined → await 續期
+//   → 成功後再呼叫 queue() 設一個**新的** timeout。
+//   若 routine 在 await 期間結束，finally 的 `if (timeout) clearTimeout` 已經
+//   無事可做（timeout 是 undefined），但 finally 又 await extension，
+//   於是 queue() 在清理之後才跑，留下一個沒有人清除的 timer。
+//
+// 本測試**不靠時序猜測**：routine 等到「續期真的開始了」才返回，因此
+// 「返回時續期在途」是確定成立的，而非靠 sleep 碰運氣。
+// ---------------------------------------------------------------------------
+test("F6: routine 在續期途中結束 → using() 返回後仍有殘留 timer", async () => {
+  const nodes = makeNodes(3);
+  const redlock = new Redlock(nodes, {
+    retryCount: 0,
+    retryDelay: 0,
+    retryJitter: 0,
+    automaticExtensionThreshold: 100,
+  });
+
+  const duration = 300;
+
+  // --- 追蹤全域 setTimeout，辨識「本次呼叫期間建立且仍然存活」的 timer ---
+  const pending = new Set();
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    const handle = origSetTimeout(
+      () => {
+        pending.delete(handle);
+        fn(...rest);
+      },
+      ms,
+      ...rest
+    );
+    pending.add(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    pending.delete(handle);
+    return origClearTimeout(handle);
+  };
+
+  let markExtendStarted;
+  const extendStarted = new Promise((r) => (markExtendStarted = r));
+  let extendInFlightAtReturn = false;
+  let extendFinished = false;
+
+  // 讓 EXTEND 這條路徑變慢，並在它「已經開始」時通知 routine
+  for (const n of nodes) {
+    const originalEval = n.eval.bind(n);
+    n.eval = async (script, numKeys, args) => {
+      const isExtend = script.includes('redis.call("get", key) ~= ARGV[1]');
+      if (isExtend) {
+        markExtendStarted();
+        await sleep(80); // 續期在途的時間窗
+        const r = await originalEval(script, numKeys, args);
+        extendFinished = true;
+        return r;
+      }
+      return originalEval(script, numKeys, args);
+    };
+  }
+
+  const baseline = new Set(pending);
+
+  try {
+    await redlock.using([RES], duration, async () => {
+      await extendStarted; // 等到自動續期真的開始
+      extendInFlightAtReturn = !extendFinished; // 返回時它仍在途
+      return "ROUTINE_DONE";
+    });
+
+    const leaked = [...pending].filter((h) => !baseline.has(h));
+
+    assert.equal(
+      extendInFlightAtReturn,
+      true,
+      "先決條件：routine 返回時，自動續期確實還在途中"
+    );
+    assert.equal(
+      nodes.every((n) => n.get(RES) === null),
+      true,
+      "鎖已在所有節點上釋放"
+    );
+    assert.ok(
+      leaked.length > 0,
+      `using() 返回後仍有 ${leaked.length} 個殘留 timer（洩漏）——` +
+        `它們會在鎖已釋放之後才觸發 extend()`
+    );
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    globalThis.clearTimeout = origClearTimeout;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -343,4 +466,152 @@ test("陰性對照: 沒有節點崩潰時，第二個 client 拿不到 quorum", 
   }
   assert.ok(error instanceof ExecutionError, "B 無法取得 quorum（只有 node3 空閒）");
   assert.ok(a.expiration > Date.now(), "A 仍是唯一的持有者");
+});
+
+// ===========================================================================
+// F4 的加強版：routine 三態中的 CHECKED_LATE 與 CHECKED
+//
+// 原本的 F4 用的是「routine 完全不檢查 signal」的版本。那個版本會被合理反駁成
+// 「README 早就叫你要檢查，是你自己的錯」。下面兩個測試才是關鍵：
+//   (b) 檢查了就派送 —— 檢查與派送之間沒有 await，abort 沒有機會被觀察到，
+//       派送早於鎖失效、效果卻晚於鎖失效。這是**不可約的 TOCTOU**。
+//   (c) 每次 await 之後都複查 —— 在途操作的效果仍然落地，但不再做新的工作。
+//       所以「照 README 做」只能**界定**暴露，不能**消除**它。
+//
+// 時序設計：`failExtend` 讓續期失敗 → 鎖自然到期 → abort。
+// `delayMs = 20` 是必要的：`using()` 的 extend() 在失敗後會在
+// `lock.expiration > Date.now()` 期間**遞迴重試**（src/index.ts:734-736），
+// 沒有延遲的話那是一段純 microtask 迴圈，會餓死 timer、讓 pollUntil 失效。
+// ===========================================================================
+
+/** 建立 F4(b)/(c) 共用的情境：3 節點、續期必失敗、每次往返 20ms。 */
+function makeF4Scenario() {
+  const nodes = makeNodes(3);
+  for (const n of nodes) {
+    n.failExtend = true;
+    n.delayMs = 20;
+  }
+  const redlock = new Redlock(nodes, {
+    retryCount: 0,
+    retryDelay: 0,
+    retryJitter: 0,
+    automaticExtensionThreshold: 100,
+  });
+  return { nodes, redlock, duration: 300 };
+}
+
+test("F4(b): routine 檢查了 signal.aborted 才派送，效果仍落在鎖失效之後", async () => {
+  const { nodes, redlock, duration } = makeF4Scenario();
+
+  let enteredAt = 0;
+  let dispatchedAt = 0;
+  let effectLandedAt = 0;
+  let checkPassed = false;
+  let inside = false;
+  let signalRef = null;
+
+  const pA = redlock.using([RES], duration, async (signal) => {
+    signalRef = signal;
+    enteredAt = Date.now();
+    inside = true;
+
+    await pollUntil(() => Date.now() >= enteredAt + 230, 5_000, "A 的派送時點");
+
+    // ↓↓↓ 檢查與派送**緊鄰**，中間沒有任何 await —— 這是本測試的重點
+    checkPassed = !signal.aborted;
+    if (signal.aborted) throw signal.error;
+    dispatchedAt = Date.now();
+
+    await sleep(90); // 「寫入」的往返：跨越鎖失效
+    effectLandedAt = Date.now();
+    inside = false;
+    return "A";
+  });
+
+  let abortedAt = 0;
+  const pAbortWatch = (async () => {
+    await pollUntil(() => signalRef !== null && signalRef.aborted, 6_000, "A 的 abort");
+    abortedAt = Date.now();
+  })();
+
+  // B 等 A 的 key 全部過期（EXTEND 失敗所以沒有被續期）後進場。
+  // 必須先確認 A 真的拿到鎖，否則「沒有 key」會在 A 取得之前就成立，
+  // B 會和 A 搶鎖、兩邊都拿不到 quorum。
+  await pollUntil(() => enteredAt !== 0, 3_000, "A 進入臨界區");
+  await pollUntil(() => nodes.every((n) => !n.exists(RES)), 5_000, "A 的 key 全部過期");
+  let bEnteredWhileAInside = false;
+  const pB = redlock.using([RES], duration, async () => {
+    bEnteredWhileAInside = inside;
+    await sleep(40);
+    return "B";
+  });
+
+  const [a, b] = await Promise.all([pA.catch((e) => e), pB, pAbortWatch.catch(() => {})]);
+
+  assert.equal(b, "B", "B 正常完成");
+  assert.equal(checkPassed, true, "A **確實**做了 signal.aborted 檢查，且檢查當時尚未 abort");
+  assert.ok(dispatchedAt < abortedAt, `派送(${dispatchedAt}) 早於 abort(${abortedAt})`);
+  assert.ok(
+    effectLandedAt > abortedAt,
+    `效果落地(${effectLandedAt}) 晚於 abort(${abortedAt}) → 檢查無法阻止它`
+  );
+  assert.equal(
+    bEnteredWhileAInside,
+    true,
+    "B 進入臨界區時 A 仍在臨界區內 → 互斥被破壞（且 A 並非沒檢查）"
+  );
+  assert.ok(a instanceof ExecutionError, `A 以 release 失敗收場（F7），實際 ${a}`);
+});
+
+test("F4(c) 對照: 每次 await 後都複查 → 在途效果仍落地，但不再做新的臨界工作", async () => {
+  const { nodes, redlock, duration } = makeF4Scenario();
+
+  let enteredAt = 0;
+  let effectLandedAt = 0;
+  let recheckSawAbort = false;
+  let didMoreWork = false;
+  let signalRef = null;
+
+  const pA = redlock.using([RES], duration, async (signal) => {
+    signalRef = signal;
+    enteredAt = Date.now();
+
+    await pollUntil(() => Date.now() >= enteredAt + 230, 5_000, "A 的派送時點");
+    if (signal.aborted) throw signal.error; // 檢查（通過）
+    await sleep(90); // 一次在途操作，跨越鎖失效
+
+    effectLandedAt = Date.now();
+    // ↓ 每次 await 之後都複查 —— 這是 README 建議的寫法
+    recheckSawAbort = signal.aborted;
+    if (signal.aborted) throw signal.error;
+
+    didMoreWork = true; // 不應被執行到
+    return "A";
+  });
+
+  let abortedAt = 0;
+  const pAbortWatch = (async () => {
+    await pollUntil(() => signalRef !== null && signalRef.aborted, 6_000, "A 的 abort");
+    abortedAt = Date.now();
+  })();
+
+  // 同 F4(b)：先確認 A 真的拿到鎖，否則 B 會在 A 之前就搶鎖
+  await pollUntil(() => enteredAt !== 0, 3_000, "A 進入臨界區");
+  await pollUntil(() => nodes.every((n) => !n.exists(RES)), 5_000, "A 的 key 全部過期");
+  const pB = redlock.using([RES], duration, async () => {
+    await sleep(40);
+    return "B";
+  });
+
+  const [a, b] = await Promise.all([pA.catch((e) => e), pB, pAbortWatch.catch(() => {})]);
+
+  assert.equal(b, "B", "B 正常完成");
+  assert.equal(recheckSawAbort, true, "複查確實觀察到 abort");
+  assert.ok(
+    effectLandedAt > abortedAt,
+    `即使逐次複查，單一在途操作的效果仍落地於 abort 之後` +
+      `（落地 ${effectLandedAt} > abort ${abortedAt}）→ 只能界定、無法消除`
+  );
+  assert.equal(didMoreWork, false, "複查之後 A 沒有再做任何新的臨界工作");
+  assert.ok(a instanceof ExecutionError, `A 以 release 失敗收場（F7），實際 ${a}`);
 });

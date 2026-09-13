@@ -84,6 +84,9 @@ module redlock {
     acquirePhase: AcquirePhase,
     acquireKind: AcquireKind,
     acquireStart: int,
+    // 本次 acquire() 還剩幾次重試（src/index.ts:431-432 的 retryCount 預算）。
+    // 歸零時唯一的出口是 failAcquire（補償釋放與「回到 caller」是同一個 await）。
+    retriesLeft: int,
     // 本次 attempt 是否已執行過（attempt 為原子動作，只能跑一次）。
     attemptDone: bool,
     // 本次 attempt 實際搶到的節點（= 投贊成的節點 = 寫入 key 的節點）。
@@ -146,6 +149,15 @@ module redlock {
   const ENABLE_CLOCK_JUMP: bool
   // 全體 client 的 routine 檢查行為（建模決策 8）。實例化時選擇。
   const ROUTINE: RoutineKind
+  // acquire() 的重試預算（src/index.ts:431-432：maxAttempts = retryCount + 1）。
+  // 真實預設 retryCount = 10（11 次 attempt）；模型只取 K 次以壓縮狀態空間
+  // （jitter/backoff 的時間分佈不影響任何安全性不變式，只保留「可重試」這件事）。
+  //
+  // **這個 const 的存在是為了保真度**：沒有它，模型無法區分「重試中」與
+  // 「預算耗盡、補償釋放後回到 caller」，於是 releaseResidual 只能是一個
+  // 自由動作，允許 client 停在 IDLE 且帶著殘留 key —— 那是真實程式碼到不了的
+  // 狀態（acquire() 是 await 完補償釋放才 reject，src/index.ts:330-340）。
+  const RETRY_BUDGET: int
 
   // ===========================================================================
   // 狀態變數（Step 2）—— 三個獨立關注點，刻意不塞進單一 State 記錄
@@ -324,6 +336,7 @@ module redlock {
       acquirePhase: IDLE,
       acquireKind: NO_VALIDITY_CHECK,
       acquireStart: 0,
+      retriesLeft: 0,
       attemptDone: false,
       grantedNodes: Set(),
       lock: emptyLock,
@@ -385,13 +398,11 @@ module redlock {
       acquireStart: now,
       attemptDone: false,
       grantedNodes: Set(),
-      lock: {
-        ...emptyLock,
-        value: if (holdsSomething(clients.get(c)))
-          valOf(clients.get(c))
-        else
-          c * 100 + now,
-      },
+      retriesLeft: RETRY_BUDGET,
+      // IDLE 保證手上沒有任何殘留 key（唯一回到 IDLE 的 acquire 路徑是
+      // failAcquire，它會原子地補償釋放），所以每次 acquire() 都產生新 value。
+      // 一次呼叫之內的重試由 retryAcquire 保留同一個 value（F2 的機制）。
+      lock: { ...emptyLock, value: c * 100 + now },
       signalAbort: false,
       releasing: false,
       releaseDone: false,
@@ -472,21 +483,32 @@ module redlock {
     clients.get(c).acquirePhase == AWAIT_ACQUIRE,
     clients.get(c).attemptDone,
     not(hasQuorum(clients.get(c).grantedNodes.size())),
+    clients.get(c).retriesLeft > 0,
+    // **留在 AWAIT_ACQUIRE**：真實的 retry 是 `_execute` 的 while 迴圈
+    // （src/index.ts:436-470），client 仍在 acquire() 之內，沒有回到 caller。
+    // 保留 lock.value 與節點上的殘留 key —— 這正是 F2 自我阻塞的機制來源。
     clients' = clients.set(c, {
       ...clients.get(c),
-      acquirePhase: IDLE,
       attemptDone: false,
       grantedNodes: Set(),
+      retriesLeft: clients.get(c).retriesLeft - 1,
     }),
     now' = now,
     nodes' = nodes,
   }
 
-  // acquire() 失敗路徑的補償釋放（src/index.ts:333-337，retryCount: 0）。
-  // 清除節點上的殘留 key；若這一步沒發生，殘留的 key 會持續擋住自己（F2）。
-  action releaseResidual(c: ClientId): bool = all {
-    clients.get(c).acquirePhase == IDLE,
-    holdsSomething(clients.get(c)),
+  // acquire() 的重試預算耗盡 → 補償釋放**之後**才回到 caller
+  // （src/index.ts:330-340：`await this._execute(releaseScript, ..., {retryCount: 0})`
+  // 完成後才 `throw error`）。
+  //
+  // **這個動作取代了原本自由的 `releaseResidual`**：真實程式碼沒有「放棄但不清理」
+  // 這個選項——補償釋放與「回到 IDLE」是同一個 await 的兩半。寫成同一個動作，
+  // 模型才不會允許「IDLE + 殘留 key」這個真實到不了的狀態。
+  action failAcquire(c: ClientId): bool = all {
+    clients.get(c).acquirePhase == AWAIT_ACQUIRE,
+    clients.get(c).attemptDone,
+    not(hasQuorum(clients.get(c).grantedNodes.size())),
+    clients.get(c).retriesLeft == 0,
     nodes' = NODES.fold(nodes, (acc, n) =>
       acc.set(n, RESOURCES.mapBy(r =>
         if (releaseMine(mkState(now, nodes, clients), c, n).contains(r))
@@ -495,7 +517,13 @@ module redlock {
           nodes.get(n).get(r)
       ))
     ),
-    clients' = clients.set(c, { ...clients.get(c), lock: emptyLock }),
+    clients' = clients.set(c, {
+      ...clients.get(c),
+      acquirePhase: IDLE,
+      attemptDone: false,
+      grantedNodes: Set(),
+      lock: emptyLock,
+    }),
     now' = now,
   }
 
@@ -690,7 +718,7 @@ module redlock {
       attemptAcquire(c, chosen),
       completeAcquire(c),
       retryAcquire(c),
-      releaseResidual(c),
+      failAcquire(c),
       doIsolationCheck(c),
       enterCritical(c),
       criticalWork(c),
@@ -773,8 +801,14 @@ module redlock {
   val selfBlockedByOwnValue: bool =
     CLIENTS.exists(c => clients.get(c).selfBlocked)
 
-  // **F2(b)**：兩個 client 都曾被自己的殘留 key 擋住，且都已退回 IDLE 並
-  // 仍帶著殘留 value——即雙方都在 retry 窗口內拿不到 quorum（互相卡死到 TTL）。
+  // **F2(b)**：兩個 client 都曾被自己的殘留 key 擋住，且兩人都**仍在同一次
+  // acquire() 的重試迴圈內**（AWAIT_ACQUIRE、本次 attempt 已完成、未達 quorum）
+  // ——即雙方在重試窗口內互相卡死。
+  //
+  // ⚠️ 保真度修正：舊版把這個述詞寫成「兩人都已退回 IDLE 且仍帶著殘留 value」。
+  // 那是**真實到不了的狀態**——acquire() 的補償釋放與「回到 caller」是同一個
+  // await 的兩半（src/index.ts:330-340），所以 IDLE 必然代表手上沒有殘留 key。
+  // 危害確實存在，但它的位置是**重試窗口之內**，不是窗口之外。
   //
   // ⚠️ 此狀態在隨機走訪下機率約 0.0015%，**不應**作為 CI 的百分比斷言。
   // 可達性由 redlockTest.qnt 的 redlockF2Scenario::bothClientsStarveTest
@@ -783,7 +817,8 @@ module redlock {
     CLIENTS.size() == 2 and
     CLIENTS.forall(c =>
       clients.get(c).selfBlocked and
-      clients.get(c).acquirePhase == IDLE and
-      holdsSomething(clients.get(c))
+      clients.get(c).acquirePhase == AWAIT_ACQUIRE and
+      clients.get(c).attemptDone and
+      not(hasQuorum(clients.get(c).grantedNodes.size()))
     )
 }

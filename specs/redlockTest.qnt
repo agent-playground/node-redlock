@@ -30,6 +30,7 @@ module redlockDefault {
     ENABLE_CRASH_LOSS = false,
     ENABLE_CLOCK_JUMP = false,
     ROUTINE = "CHECKED_LATE",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 }
 
@@ -47,6 +48,7 @@ module redlockChecked {
     ENABLE_CRASH_LOSS = false,
     ENABLE_CLOCK_JUMP = false,
     ROUTINE = "CHECKED",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 }
 
@@ -63,6 +65,7 @@ module redlockUnchecked {
     ENABLE_CRASH_LOSS = false,
     ENABLE_CLOCK_JUMP = false,
     ROUTINE = "UNCHECKED",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 }
 
@@ -79,6 +82,7 @@ module redlockCrashLoss {
     ENABLE_CRASH_LOSS = true,
     ENABLE_CLOCK_JUMP = false,
     ROUTINE = "CHECKED_LATE",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 }
 
@@ -95,6 +99,7 @@ module redlockClockJump {
     ENABLE_CRASH_LOSS = false,
     ENABLE_CLOCK_JUMP = true,
     ROUTINE = "CHECKED_LATE",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 }
 
@@ -115,6 +120,7 @@ module redlockAssumptions {
     ENABLE_CRASH_LOSS = false,
     ENABLE_CLOCK_JUMP = false,
     ROUTINE = "CHECKED_LATE",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 
   // quorum 前提：N=3、f=1 時 2f < n 成立，且 quorum = floor(n/2)+1 = 2。
@@ -179,11 +185,12 @@ module redlockF2Scenario {
     ENABLE_CRASH_LOSS = false,
     ENABLE_CLOCK_JUMP = false,
     ROUTINE = "CHECKED_LATE",
+    RETRY_BUDGET = 1,
   ).* from "./redlock"
 
   run bothClientsStarveTest =
     init
-      // client 1 只搶到節點 1（1 票 < quorum 2）→ retry
+      // client 1 只搶到節點 1（1 票 < quorum 2）→ retry（仍在 AWAIT_ACQUIRE 之內）
       .then(startAcquire(1))
       .then(attemptAcquire(1, Set(1)))
       .then(retryAcquire(1))
@@ -191,25 +198,35 @@ module redlockF2Scenario {
       .then(startAcquire(2))
       .then(attemptAcquire(2, Set(2)))
       .then(retryAcquire(2))
-      // client 1 重試：節點 1 上是**自己的** key，被 exists 擋住
-      .then(startAcquire(1))
+      // 第二次 attempt：節點 1／2 上是**自己的** key，被 exists 擋住。
+      // 注意這裡**不再呼叫 startAcquire**——真實的重試不是新的 acquire() 呼叫，
+      // 而是 _execute 的 while 迴圈（src/index.ts:436-470），client 沒有回到 caller。
       .then(attemptAcquire(1, Set()))
-      .then(retryAcquire(1))
-      // client 2 重試：節點 2 上是**自己的** key，同樣被擋住
-      .then(startAcquire(2))
       .then(attemptAcquire(2, Set()))
-      .then(retryAcquire(2))
-      // 兩人都退回 IDLE，卻都還帶著殘留 value，且都被自己的 key 擋過
+      // 兩人都還在重試窗口內、都被自己的 key 擋過、都沒有 quorum
       .expect(bothClientsFailWithinRetryWindow)
       .expect(selfBlockedByOwnValue)
       .expect(clients.get(1).selfBlocked)
       .expect(clients.get(2).selfBlocked)
-      .expect(clients.get(1).acquirePhase == IDLE)
-      .expect(clients.get(2).acquirePhase == IDLE)
-      // 殘留的 key 仍在節點上（value 各為 100 / 200）
+      .expect(clients.get(1).acquirePhase == AWAIT_ACQUIRE)
+      .expect(clients.get(2).acquirePhase == AWAIT_ACQUIRE)
+      .expect(clients.get(1).retriesLeft == 0)
+      .expect(clients.get(2).retriesLeft == 0)
+      // 殘留的 key 仍在節點上（value 各為 100 / 200）—— 這正是自我阻塞的來源
       .expect(nodes.get(1).get("r").value == 100)
       .expect(nodes.get(2).get("r").value == 200)
       // 而且沒有任何一方真正持有鎖
       .expect(not(trulyHolds(mkState(now, nodes, clients), 1)))
       .expect(not(trulyHolds(mkState(now, nodes, clients), 2)))
+      // 預算耗盡 → 唯一的出口是「補償釋放 + 回到 IDLE」，兩者是同一個動作
+      .then(failAcquire(1))
+      .then(failAcquire(2))
+      .expect(clients.get(1).acquirePhase == IDLE)
+      .expect(clients.get(2).acquirePhase == IDLE)
+      // 補償釋放把殘留 key 清掉了。舊版模型允許「IDLE + 殘留 key」，
+      // 那是真實程式碼到不了的狀態；這裡把它證明為不可停留。
+      .expect(nodes.get(1).get("r").value == 0)
+      .expect(nodes.get(2).get("r").value == 0)
+      .expect(not(holdsSomething(clients.get(1))))
+      .expect(not(holdsSomething(clients.get(2))))
 }

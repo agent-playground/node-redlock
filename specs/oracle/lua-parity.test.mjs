@@ -72,7 +72,13 @@ function fakeDriver(node, scripts) {
 const client = await tryConnect();
 const skip = client === null;
 if (skip) {
-  console.error(`[lua-parity] 連不上 Redis ${HOST}:${PORT} —— 全部略過。`);
+  const msg = `[lua-parity] 連不上 Redis ${HOST}:${PORT}`;
+  // CI 下**不得**略過：node --test 在 skip 時仍然 exit 0，那會讓
+  // 「假 Redis 的忠實度」這道**防止循環論證**的保證靜默消失——同一種假綠燈。
+  if (process.env.CI) {
+    throw new Error(`${msg}；CI 環境下必須提供 Redis（設定 ORACLE_REDIS_PORT）`);
+  }
+  console.error(`${msg} —— 全部略過。`);
 }
 
 const S = realScripts();

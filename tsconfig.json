@@ -11,7 +11,15 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": false,
-    "sourceMap": true
+    "sourceMap": true,
+    // 只自動載入 @types/node。**這不是風格偏好，是建置能否成功的分界**：
+    // devDependency `@informalsystems/quint@0.32.0` 會傳入
+    // `@types/lodash.clonedeep` → `@types/lodash@4.17.x`，而 4.17 的 .d.ts 用了
+    // TypeScript 4.6 解析不了的語法（TS1005 '?' expected），`tsc` 因而 exit 2。
+    // `@types/lodash` 從未被這專案使用，它只是被「自動載入所有 @types/*」拉進來的。
+    // 限定 types 之後，`import ... from "ioredis"` 仍會透過 `@types/ioredis` 正常解析
+    // （`types` 只控制**全域自動載入**，不影響 import 的型別解析）。
+    "types": ["node"]
   },
   "include": ["./src/**/*"]
 }
