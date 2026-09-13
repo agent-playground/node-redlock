@@ -46,13 +46,26 @@ test("F1: acquire() 在往返超過 TTL 時回傳『已過期卻無錯誤』的�
   const t1 = Date.now();
 
   assert.ok(t1 - t0 >= 120, `acquire 應該真的慢（實際 ${t1 - t0}ms）`);
-  // 模型的述詞：acquireBelieved(cs) = acquireStart + DURATION - DRIFT
-  assert.equal(lock.expiration, t0 + duration - drift(duration), "expiration 的算法與模型一致");
-  // 反例本體：回傳的鎖已經過期，而 acquire() 沒有任何報錯
-  assert.ok(lock.expiration <= t1, `鎖已過期（expiration=${lock.expiration} <= now=${t1}）卻照樣回傳`);
+
+  // 模型的述詞：acquireBelieved(cs) = acquireStart + DURATION - DRIFT。
+  // 注意 start 是程式碼在 _attemptOperation 內部取的（src/index.ts:481），
+  // 會 >= 這裡的 t0，故只斷言在數毫秒的排程裕度內相符。
+  const expected = t0 + duration - drift(duration);
   assert.ok(
-    lock.expiration < t0 + duration,
-    "expiration 由『過期的 start』算出，而非回應抵達時間"
+    Math.abs(lock.expiration - expected) <= 5,
+    `expiration 的算法與模型一致（實際 ${lock.expiration}，預期約 ${expected}）`
+  );
+
+  // 反例本體（一）：回傳的鎖已經過期，而 acquire() 沒有任何報錯
+  assert.ok(
+    lock.expiration <= t1,
+    `鎖已過期（expiration=${lock.expiration} <= now=${t1}）卻照樣回傳`
+  );
+  // 反例本體（二）：expiration 明顯**早於**回應抵達時間
+  // → 它是由送出前的 start 算出的，而非回應抵達時間。這是 F1 的根因。
+  assert.ok(
+    t1 - lock.expiration >= 30,
+    `expiration 應遠早於回應抵達（差距僅 ${t1 - lock.expiration}ms）`
   );
 });
 
@@ -75,10 +88,20 @@ test("F5: extend() 在慢往返下回傳已過期的 replacement Lock", async ()
   const t1 = Date.now();
 
   assert.ok(t1 - t0 >= 120, `extend 應該真的慢（實際 ${t1 - t0}ms）`);
-  assert.equal(replacement.expiration, t0 + duration - drift(duration));
+
+  // 同 F1：start 由程式碼內部取得（src/index.ts:481），只斷言數毫秒裕度內相符
+  const expected = t0 + duration - drift(duration);
+  assert.ok(
+    Math.abs(replacement.expiration - expected) <= 5,
+    `replacement 的算法與模型一致（實際 ${replacement.expiration}，預期約 ${expected}）`
+  );
   assert.ok(
     replacement.expiration <= t1,
     `replacement 已過期（expiration=${replacement.expiration} <= now=${t1}）`
+  );
+  assert.ok(
+    t1 - replacement.expiration >= 30,
+    `replacement 的 expiration 應遠早於回應抵達（差距僅 ${t1 - replacement.expiration}ms）`
   );
 });
 
