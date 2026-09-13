@@ -1,0 +1,16 @@
+specs/oracle/README.md
+  h_1b119f25eaf333 36-38,54-77,119
+specs/oracle/real-redis.test.mjs
+  h_1b119f25eaf333 1-228
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "38f792e5593cc6b3463d42cac6dfccc05972bbd1",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
