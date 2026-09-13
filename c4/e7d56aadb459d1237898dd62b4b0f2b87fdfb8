@@ -1,0 +1,14 @@
+specs/oracle/counterexamples.test.mjs
+  h_1b119f25eaf333 49-65,67-68,91-97,102-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c4e7d56aadb459d1237898dd62b4b0f2b87fdfb8",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
