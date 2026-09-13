@@ -1,0 +1,16 @@
+specs/TESTS.md
+  h_1b119f25eaf333 1-112
+tests/counterexamples.test.ts
+  h_1b119f25eaf333 1-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6d4d2fe002476e4da83956454cccf71f1a4dbe94",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
