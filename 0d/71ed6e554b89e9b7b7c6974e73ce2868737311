@@ -1,0 +1,44 @@
+package.json
+  h_1b119f25eaf333 70-72
+specs/README.md
+  h_1b119f25eaf333 62-77,98-99,102-104,188-198,203-235,260-267,296-304,309-321,323,325-328,332-334,337,386-413,553-612,617-620
+specs/oracle/README.md
+  h_1b119f25eaf333 12,14,19-20,22-23,25-26,29-35,38-42,47-59,107-137,154-162
+specs/oracle/counterexamples.test.mjs
+  h_1b119f25eaf333 142-264,470-617
+specs/oracle/lua-parity.test.mjs
+  h_1b119f25eaf333 75-81
+specs/oracle/real-redis.test.mjs
+  h_1b119f25eaf333 70-77
+specs/redlock.qnt
+  h_1b119f25eaf333 87-89,152-160,339,401-405,486-489,494,500-511,520-526,721,804-811,820-822
+specs/redlockTest.qnt
+  h_1b119f25eaf333 33,51,68,85,102,123,188,193,201-203,206,211-215,221-231
+specs/traces/INV_VIOLATED_acquireReturnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_concurrentCriticalSections.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_extendReturnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_quorumCoverageDecay.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_releaseErrorMasksAbort.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_returnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_twoClientsBelieveLock.itf.json
+  h_1b119f25eaf333 1
+tsconfig.json
+  h_1b119f25eaf333 14-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0d71ed6e554b89e9b7b7c6974e73ce2868737311",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
