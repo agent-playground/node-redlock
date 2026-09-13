@@ -10,12 +10,12 @@
 
 ## 檔案
 
-| 檔案 | 內容 |
-|---|---|
-| `redlock.qnt` | 參數化規格（`const` 未實例化，單獨 `quint run` 會失敗）。型別、純函數、狀態機、不變式、witness。**不含任何 `run` 測試**。 |
-| `redlockTest.qnt` | 具體實例模組 + `run` 測試。要跑任何東西都是跑這個檔案，用 `--main=<實例>` 選情境。 |
-| `traces/*.itf.json` | 四條 `INV_VIOLATED_*` 的反例軌跡（ITF 格式，由 `quint verify --out-itf` 產出）。 |
-| `README.md` | 本檔：驗證報告、覆蓋範圍、CI 草稿、工具鏈限制。 |
+| 檔案                | 內容                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `redlock.qnt`       | 參數化規格（`const` 未實例化，單獨 `quint run` 會失敗）。型別、純函數、狀態機、不變式、witness。**不含任何 `run` 測試**。 |
+| `redlockTest.qnt`   | 具體實例模組 + `run` 測試。要跑任何東西都是跑這個檔案，用 `--main=<實例>` 選情境。                                        |
+| `traces/*.itf.json` | 四條 `INV_VIOLATED_*` 的反例軌跡（ITF 格式，由 `quint verify --out-itf` 產出）。                                          |
+| `README.md`         | 本檔：驗證報告、覆蓋範圍、CI 草稿、工具鏈限制。                                                                           |
 
 ## 如何重跑（完整驗證紀錄）
 
@@ -37,6 +37,7 @@ $ npx quint run specs/redlockTest.qnt --main=redlockDefault --max-steps 12
 [ok] No violation found (…ms at … traces/second).
 Trace length statistics: max=13, min=13, average=13.00
 ```
+
 退出碼 0，輸出**不含** `Uninitialized const`。
 
 ### 3. `run` 測試（前提條件、純函數、init 形狀、F2 劇本）
@@ -58,17 +59,17 @@ $ npx quint test specs/redlockTest.qnt --main=redlockF2Scenario
 
 ### 4. 不變式（REQ-3 / REQ-4）
 
-| 不變式 | 實例 | `--max-steps` | 實測牆鐘 | 預期 | 實測 |
-|---|---|---|---|---|---|
-| `mutualExclusionOnNodes` | `redlockDefault` | 8 | **164–194 s**（兩次實測） | 無違反 | ✅ 無違反 |
-| `INV_VIOLATED_returnsExpiredLock` | `redlockDefault` | 5 | **12 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_quorumCoverageDecay` | `redlockCrashLoss` | 5 | **10 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_releaseErrorMasksAbort` | `redlockDefault` | 10 | **95 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_concurrentCriticalSections` | `redlockDefault` | 12 | **676 s**（重測 944 s） | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_acquireReturnsExpiredLock`（F1 專屬） | `redlockDefault` | 6 | **12 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_extendReturnsExpiredLock`（F5 專屬） | `redlockDefault` | 8 | **25 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_twoClientsBelieveLock`（F8 專屬） | `redlockCrashLoss` | 8 | **26 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_twoClientsBelieveLock`（陰性對照） | `redlockDefault` | 8 | — | **不得**有反例 | ✅ 無反例 |
+| 不變式                                              | 實例               | `--max-steps` | 實測牆鐘                  | 預期           | 實測          |
+| --------------------------------------------------- | ------------------ | ------------- | ------------------------- | -------------- | ------------- |
+| `mutualExclusionOnNodes`                            | `redlockDefault`   | 8             | **164–194 s**（兩次實測） | 無違反         | ✅ 無違反     |
+| `INV_VIOLATED_returnsExpiredLock`                   | `redlockDefault`   | 5             | **12 s**                  | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_quorumCoverageDecay`                  | `redlockCrashLoss` | 5             | **10 s**                  | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_releaseErrorMasksAbort`               | `redlockDefault`   | 10            | **95 s**                  | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_concurrentCriticalSections`           | `redlockDefault`   | 12            | **676 s**（重測 944 s）   | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_acquireReturnsExpiredLock`（F1 專屬） | `redlockDefault`   | 6             | **12 s**                  | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_extendReturnsExpiredLock`（F5 專屬）  | `redlockDefault`   | 8             | **25 s**                  | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_twoClientsBelieveLock`（F8 專屬）     | `redlockCrashLoss` | 8             | **26 s**                  | 必須找到反例   | ✅ 反例 + ITF |
+| `INV_VIOLATED_twoClientsBelieveLock`（陰性對照）    | `redlockDefault`   | 8             | —                         | **不得**有反例 | ✅ 無反例     |
 
 ```console
 # 真不變式：必須「無違反」、退出碼 0
@@ -110,44 +111,44 @@ CI 的百分比斷言只保留 `selfBlockedByOwnValue`。
 
 ## 已涵蓋（REQ-7）
 
-| 項目 | 說明 |
-|---|---|
-| **F1** 缺 `validity <= 0` 檢查 | `acquire()` 結算（`src/index.ts:318-329`）。`returnedExpired` 在 `completeAcquire` 以 `acquireStart + DURATION - DRIFT <= now` 判定。 |
-| **F2** `exists` 造成的自我阻塞 | `ACQUIRE_SCRIPT`（L12-27）。`attemptAcquire` 以 `exists` 語意判定 `acquireOk`，`selfBlocked` 記錄「被自己上一輪留下的 key 擋住」。 |
-| **F3** extend 不修復少數節點 | `EXTEND_SCRIPT`（L29-44）。`attemptExtend` 只更新投贊成的節點；`permits` 只增不減，真實覆蓋率由 `permitsOf` 以 `nodes` 過濾。 |
-| **F4** abort 諮詢式 / 臨界區重疊 | routine 三態（`UNCHECKED` / `CHECKED` / `CHECKED_LATE`）＋ `criticalWork` 讓鎖可在臨界區執行途中失效。**安全性結論由此條承載。** |
-| **F5** `extend()` 的 check-then-act | `failExtend` 的 `stillValidAt` guard（L734-739）＋ `completeExtend` 同樣缺 validity 檢查（L400-406，併入 F1 的 `returnedExpired`）。 |
-| **F7** release 失敗遮蔽錯誤 | `startRelease` 先設 `expiration = 0`（L355）＋ `completeRelease` 判定 `releaseForCount < quorum`（L354-363 + 767）。 |
-| **F8** 節點崩潰遺失 key（Kleppmann） | `crashAndLoseKey`，由 `ENABLE_CRASH_LOSS` 控制（**預設 false**）。 |
-| **F9** 時鐘跳躍 | `jumpClock`，由 `ENABLE_CLOCK_JUMP` 控制（**預設 false**）。 |
-| 三層時間 | 全域 `now` ＋ 每節點 key 的真實到期 ＋ 每 client 相信的 `expiration`。 |
-| quorum 前提 | `redlockAssumptions::quorumAssumptionTest`（`2f < n`、`quorum = ⌊n/2⌋+1`）。 |
+| 項目                                 | 說明                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **F1** 缺 `validity <= 0` 檢查       | `acquire()` 結算（`src/index.ts:318-329`）。`returnedExpired` 在 `completeAcquire` 以 `acquireStart + DURATION - DRIFT <= now` 判定。 |
+| **F2** `exists` 造成的自我阻塞       | `ACQUIRE_SCRIPT`（L12-27）。`attemptAcquire` 以 `exists` 語意判定 `acquireOk`，`selfBlocked` 記錄「被自己上一輪留下的 key 擋住」。    |
+| **F3** extend 不修復少數節點         | `EXTEND_SCRIPT`（L29-44）。`attemptExtend` 只更新投贊成的節點；`permits` 只增不減，真實覆蓋率由 `permitsOf` 以 `nodes` 過濾。         |
+| **F4** abort 諮詢式 / 臨界區重疊     | routine 三態（`UNCHECKED` / `CHECKED` / `CHECKED_LATE`）＋ `criticalWork` 讓鎖可在臨界區執行途中失效。**安全性結論由此條承載。**      |
+| **F5** `extend()` 的 check-then-act  | `failExtend` 的 `stillValidAt` guard（L734-739）＋ `completeExtend` 同樣缺 validity 檢查（L400-406，併入 F1 的 `returnedExpired`）。  |
+| **F7** release 失敗遮蔽錯誤          | `startRelease` 先設 `expiration = 0`（L355）＋ `completeRelease` 判定 `releaseForCount < quorum`（L354-363 + 767）。                  |
+| **F8** 節點崩潰遺失 key（Kleppmann） | `crashAndLoseKey`，由 `ENABLE_CRASH_LOSS` 控制（**預設 false**）。                                                                    |
+| **F9** 時鐘跳躍                      | `jumpClock`，由 `ENABLE_CLOCK_JUMP` 控制（**預設 false**）。                                                                          |
+| 三層時間                             | 全域 `now` ＋ 每節點 key 的真實到期 ＋ 每 client 相信的 `expiration`。                                                                |
+| quorum 前提                          | `redlockAssumptions::quorumAssumptionTest`（`2f < n`、`quorum = ⌊n/2⌋+1`）。                                                          |
 
 ## 刻意未涵蓋（REQ-7）
 
-| 項目 | 為何不做 |
-|---|---|
+| 項目                                        | 為何不做                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **F6（`using()` 的 timer 洩漏，L716-765）** | 它是**單執行緒 JS event loop 的排程缺陷**：in-flight `extension` 在 `clearTimeout` 之後呼叫 `queue()`，重設了一個新的 timeout 而無人清除。要在 Quint 建模它必須引入 JS 事件迴圈與 timer 佇列，成本遠超收益，而且模型本身會比被驗的程式碼更複雜。**替代方案：改用 ava 測試涵蓋**——這個缺陷不需要精確時序交錯即可穩定重現（在 routine 結束時讓 `lock.extend` 懸置，斷言 `using()` 返回後沒有殘留 timer）。建議另開 `agent-add-tests` 工作項。 |
-| **`K >= 2` 的多資源鎖** | 多資源的 all-or-nothing 由**單一 Lua script 的原子性**保證，那是 Redis 的性質、不是這 770 行的性質。建 `K=2` 只會驗證我們當作公理的東西。代價：`acquire(["a","b"])` 失敗路徑上「部分資源 × 部分節點」的交叉狀態未被涵蓋。 |
-| **ITF 神諭測試（模型 vs 實作 trace 重放）** | `src/index.ts` 依賴真實時間、網路與 Redis；要把一條 Quint 軌跡重放進去，得先建一個能控制時鐘與逐節點注入故障的假 Redis——harness 的複雜度會超過被驗的 770 行，且 harness 自身的缺陷會使結論無法歸因。 |
-| **jitter / backoff 的時間分佈** | `_execute` 的重試延遲（L451-463）只被抽象成「可重試 K 次」的非確定性選擇。延遲分佈不影響任何安全性不變式。 |
-| **崩潰重啟後的 AOF 同步細節** | F8 只建模「key 消失」這個後果，不建模 Redis 的持久化機制本身。 |
-| **`driftFactor` 的速率漂移** | 以 `DRIFT` 這個已算好的常數呈現；漂移的**速率**建模不會改變任何不變式。 |
+| **`K >= 2` 的多資源鎖**                     | 多資源的 all-or-nothing 由**單一 Lua script 的原子性**保證，那是 Redis 的性質、不是這 770 行的性質。建 `K=2` 只會驗證我們當作公理的東西。代價：`acquire(["a","b"])` 失敗路徑上「部分資源 × 部分節點」的交叉狀態未被涵蓋。                                                                                                                                                                                                                   |
+| **ITF 神諭測試（模型 vs 實作 trace 重放）** | `src/index.ts` 依賴真實時間、網路與 Redis；要把一條 Quint 軌跡重放進去，得先建一個能控制時鐘與逐節點注入故障的假 Redis——harness 的複雜度會超過被驗的 770 行，且 harness 自身的缺陷會使結論無法歸因。                                                                                                                                                                                                                                        |
+| **jitter / backoff 的時間分佈**             | `_execute` 的重試延遲（L451-463）只被抽象成「可重試 K 次」的非確定性選擇。延遲分佈不影響任何安全性不變式。                                                                                                                                                                                                                                                                                                                                  |
+| **崩潰重啟後的 AOF 同步細節**               | F8 只建模「key 消失」這個後果，不建模 Redis 的持久化機制本身。                                                                                                                                                                                                                                                                                                                                                                              |
+| **`driftFactor` 的速率漂移**                | 以 `DRIFT` 這個已算好的常數呈現；漂移的**速率**建模不會改變任何不變式。                                                                                                                                                                                                                                                                                                                                                                     |
 
 ---
 
 ## 不變式清單
 
-| 名稱 | 類型 | 意義 |
-|---|---|---|
-| `mutualExclusionOnNodes` | 真不變式 | 不存在兩個 client 同時 `trulyHolds`（至少 quorum 個節點上 key 值相符且未到期）。 |
-| `INV_VIOLATED_returnsExpiredLock` | **預期違反** | `acquire()` / `extend()` 結算時算出的 `expiration` 已經成為過去，而程式碼沒有任何檢查就回傳（F1 ∪ F5）。 |
-| `INV_VIOLATED_acquireReturnsExpiredLock` | **預期違反** | **F1 專屬**：來源限縮在 `completeAcquire`，證明 F1 不需靠 extend 路徑即可成立。 |
-| `INV_VIOLATED_extendReturnsExpiredLock` | **預期違反** | **F5 專屬**：來源限縮在 `completeExtend`（replacement Lock），證明 F5 可獨立於 F1 成立。 |
-| `INV_VIOLATED_twoClientsBelieveLock` | **預期違反**（僅 F8 開啟時） | **F8 專屬（Kleppmann）**：不存在兩個 client **同時相信自己持有鎖**。預設情境下**不應**被違反，是 F8 的陰性對照。 |
-| `INV_VIOLATED_quorumCoverageDecay` | **預期違反** | client 相信持有有效鎖，但真實覆蓋率已跌破 quorum（F3）。 |
-| `INV_VIOLATED_concurrentCriticalSections` | **預期違反** | 兩個 client 同時在臨界區（F4）。**這是承載安全性結論的那一條。** |
-| `INV_VIOLATED_releaseErrorMasksAbort` | **預期違反** | release 失敗吃掉了已發生的 abort 錯誤（F7）。 |
+| 名稱                                      | 類型                         | 意義                                                                                                             |
+| ----------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `mutualExclusionOnNodes`                  | 真不變式                     | 不存在兩個 client 同時 `trulyHolds`（至少 quorum 個節點上 key 值相符且未到期）。                                 |
+| `INV_VIOLATED_returnsExpiredLock`         | **預期違反**                 | `acquire()` / `extend()` 結算時算出的 `expiration` 已經成為過去，而程式碼沒有任何檢查就回傳（F1 ∪ F5）。         |
+| `INV_VIOLATED_acquireReturnsExpiredLock`  | **預期違反**                 | **F1 專屬**：來源限縮在 `completeAcquire`，證明 F1 不需靠 extend 路徑即可成立。                                  |
+| `INV_VIOLATED_extendReturnsExpiredLock`   | **預期違反**                 | **F5 專屬**：來源限縮在 `completeExtend`（replacement Lock），證明 F5 可獨立於 F1 成立。                         |
+| `INV_VIOLATED_twoClientsBelieveLock`      | **預期違反**（僅 F8 開啟時） | **F8 專屬（Kleppmann）**：不存在兩個 client **同時相信自己持有鎖**。預設情境下**不應**被違反，是 F8 的陰性對照。 |
+| `INV_VIOLATED_quorumCoverageDecay`        | **預期違反**                 | client 相信持有有效鎖，但真實覆蓋率已跌破 quorum（F3）。                                                         |
+| `INV_VIOLATED_concurrentCriticalSections` | **預期違反**                 | 兩個 client 同時在臨界區（F4）。**這是承載安全性結論的那一條。**                                                 |
+| `INV_VIOLATED_releaseErrorMasksAbort`     | **預期違反**                 | release 失敗吃掉了已發生的 abort 錯誤（F7）。                                                                    |
 
 ### R1：`mutualExclusionOnNodes` 是 sanity check，不承載安全性結論
 
@@ -179,17 +180,17 @@ client 相信的到期時間是 `start + DURATION - DRIFT`，而節點端 key �
 
 ## F1–F9 逐條反例結論
 
-| 發現 | 反例？ | 證據 | 備註 |
-|---|---|---|---|
-| **F1** `acquire()` 缺 validity 檢查 | ✅ | `INV_VIOLATED_acquireReturnsExpiredLock`，6 步 / 12 s，ITF 5 states | 專屬不變式，不依賴 extend |
-| **F2** `exists` 自我阻塞 | ⚠️ **非反例，是 witness** | `selfBlockedByOwnValue` 1.19%；`redlockF2Scenario::bothClientsStarveTest` 決定性腳本 | 存活性缺陷**沒有**不變式可違反——它是「該能發生的事沒發生」，只能以可達性證明 |
-| **F3** extend 不修復少數節點 | ✅ | `INV_VIOLATED_quorumCoverageDecay`，5 步 / 10 s，ITF 5 states | **需 `ENABLE_CRASH_LOSS=true`**；預設情境下已證明不可違反（反例需非對稱節點失效） |
-| **F4** 臨界區重疊 | ✅ | `INV_VIOLATED_concurrentCriticalSections`，12 步 / 676 s，ITF 13 states | 承載安全性結論的那一條；反例恰好等於 `max-steps` 上限 |
-| **F5** `extend()` check-then-act | ✅ | `INV_VIOLATED_extendReturnsExpiredLock`，8 步 / 25 s，ITF 8 states | 專屬不變式，**可獨立於 F1 成立** |
-| **F6** timer 洩漏 | ❌ | — | 依建模決策 9 **刻意排除**於 Quint 之外（需 JS event loop）。見「刻意未涵蓋」的 ava 替代建議 |
-| **F7** release 失敗遮蔽錯誤 | ✅ | `INV_VIOLATED_releaseErrorMasksAbort`，10 步 / 190 s，ITF 10 states | — |
-| **F8** 節點崩潰遺失 key（Kleppmann） | ✅ | `INV_VIOLATED_twoClientsBelieveLock`，8 步 / 26 s，ITF 8 states | **需 `ENABLE_CRASH_LOSS=true`**；預設情境無反例（陰性對照通過） |
-| **F9** 時鐘跳躍 | ❌ **模型無法證否** | — | **見下方「F9 的建模缺陷」** |
+| 發現                                 | 反例？                    | 證據                                                                                 | 備註                                                                                        |
+| ------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| **F1** `acquire()` 缺 validity 檢查  | ✅                        | `INV_VIOLATED_acquireReturnsExpiredLock`，6 步 / 12 s，ITF 5 states                  | 專屬不變式，不依賴 extend                                                                   |
+| **F2** `exists` 自我阻塞             | ⚠️ **非反例，是 witness** | `selfBlockedByOwnValue` 1.19%；`redlockF2Scenario::bothClientsStarveTest` 決定性腳本 | 存活性缺陷**沒有**不變式可違反——它是「該能發生的事沒發生」，只能以可達性證明                |
+| **F3** extend 不修復少數節點         | ✅                        | `INV_VIOLATED_quorumCoverageDecay`，5 步 / 10 s，ITF 5 states                        | **需 `ENABLE_CRASH_LOSS=true`**；預設情境下已證明不可違反（反例需非對稱節點失效）           |
+| **F4** 臨界區重疊                    | ✅                        | `INV_VIOLATED_concurrentCriticalSections`，12 步 / 676 s，ITF 13 states              | 承載安全性結論的那一條；反例恰好等於 `max-steps` 上限                                       |
+| **F5** `extend()` check-then-act     | ✅                        | `INV_VIOLATED_extendReturnsExpiredLock`，8 步 / 25 s，ITF 8 states                   | 專屬不變式，**可獨立於 F1 成立**                                                            |
+| **F6** timer 洩漏                    | ❌                        | —                                                                                    | 依建模決策 9 **刻意排除**於 Quint 之外（需 JS event loop）。見「刻意未涵蓋」的 ava 替代建議 |
+| **F7** release 失敗遮蔽錯誤          | ✅                        | `INV_VIOLATED_releaseErrorMasksAbort`，10 步 / 190 s，ITF 10 states                  | —                                                                                           |
+| **F8** 節點崩潰遺失 key（Kleppmann） | ✅                        | `INV_VIOLATED_twoClientsBelieveLock`，8 步 / 26 s，ITF 8 states                      | **需 `ENABLE_CRASH_LOSS=true`**；預設情境無反例（陰性對照通過）                             |
+| **F9** 時鐘跳躍                      | ❌ **模型無法證否**       | —                                                                                    | **見下方「F9 的建模缺陷」**                                                                 |
 
 計數：**6 條有反例**（F1、F3、F4、F5、F7、F8）、**1 條以 witness 呈現**（F2）、
 **1 條刻意排除**（F6）、**1 條模型表達不出來**（F9）。
@@ -234,12 +235,12 @@ var nodeNow:   int   // Redis 伺服器時鐘；SET ... PX 的到期與 keyExist
 
 最短反例所需步數（`quint run` 抽樣量測，`--max-samples 20000`）：
 
-| 不變式 | 最短步數 | 落在 12 內？ |
-|---|---|---|
-| `INV_VIOLATED_returnsExpiredLock` | 4 | ✅ |
-| `INV_VIOLATED_quorumCoverageDecay`（`redlockCrashLoss`） | 4 | ✅ |
-| `INV_VIOLATED_releaseErrorMasksAbort` | 10 | ✅ |
-| `INV_VIOLATED_concurrentCriticalSections` | 12 | ✅（恰好在邊界） |
+| 不變式                                                   | 最短步數 | 落在 12 內？     |
+| -------------------------------------------------------- | -------- | ---------------- |
+| `INV_VIOLATED_returnsExpiredLock`                        | 4        | ✅               |
+| `INV_VIOLATED_quorumCoverageDecay`（`redlockCrashLoss`） | 4        | ✅               |
+| `INV_VIOLATED_releaseErrorMasksAbort`                    | 10       | ✅               |
+| `INV_VIOLATED_concurrentCriticalSections`                | 12       | ✅（恰好在邊界） |
 
 **四條都落在 `--max-steps 12` 之內**，因此 REQ-2 的界是充分的。
 但要注意：F4 的最短反例**恰好等於 12**，沒有任何餘裕；若模型再增加任何一步
@@ -249,27 +250,27 @@ var nodeNow:   int   // Redis 伺服器時鐘；SET ... PX 的到期與 keyExist
 
 `mutualExclusionOnNodes` 的實測規模曲線（`quint verify`，本機）：
 
-| `--max-steps` | 牆鐘 |
-|---|---|
-| 4 | 12 s |
-| 5 | 13 s |
-| 6 | 22 s |
-| 7 | 25 s |
-| 8 | **164 s**（第二次實測 194 s，差異來自機器負載） |
-| 10 | **> 600 s（未完成，逾時終止）** |
-| 12 | 未嘗試（依曲線外推約需數十分鐘至數小時） |
+| `--max-steps` | 牆鐘                                            |
+| ------------- | ----------------------------------------------- |
+| 4             | 12 s                                            |
+| 5             | 13 s                                            |
+| 6             | 22 s                                            |
+| 7             | 25 s                                            |
+| 8             | **164 s**（第二次實測 194 s，差異來自機器負載） |
+| 10            | **> 600 s（未完成，逾時終止）**                 |
+| 12            | 未嘗試（依曲線外推約需數十分鐘至數小時）        |
 
 成長率約每步 ×2.5。**REQ-3 要求 12 步在 10 分鐘內完成，這是做不到的。**
 原始 factory run（`34735315950`）耗盡 50 分鐘預算，正是撞上這面牆。
 
 ### 四條反例的實測牆鐘（REQ-12 的驗證紀錄）
 
-| 反例 | `--max-steps` | 實測牆鐘 | ITF 狀態數 |
-|---|---|---|---|
-| F1 / F5 `returnsExpiredLock` | 5 | 12 s | 5 |
-| F3 `quorumCoverageDecay`（`redlockCrashLoss`） | 5 | 10 s | 5 |
-| F7 `releaseErrorMasksAbort` | 10 | 95 s | 10 |
-| F4 `concurrentCriticalSections` | 12 | **676 s（11.3 分鐘）** | 13 |
+| 反例                                           | `--max-steps` | 實測牆鐘               | ITF 狀態數 |
+| ---------------------------------------------- | ------------- | ---------------------- | ---------- |
+| F1 / F5 `returnsExpiredLock`                   | 5             | 12 s                   | 5          |
+| F3 `quorumCoverageDecay`（`redlockCrashLoss`） | 5             | 10 s                   | 5          |
+| F7 `releaseErrorMasksAbort`                    | 10            | 95 s                   | 10         |
+| F4 `concurrentCriticalSections`                | 12            | **676 s（11.3 分鐘）** | 13         |
 
 F4 的 676 秒**超過 REQ-3 的 10 分鐘門檻**，但 REQ-3 的門檻是針對
 「真不變式」而非反例搜尋，REQ-4 對反例只要求「退出碼 ≠ 0 ＋ ITF 存在」。
@@ -304,12 +305,14 @@ module lib {
   const R: RK
 }
 ```
+
 ```quint
 // main.qnt
 module main {
   import lib(R = A).* from "./lib"
 }
 ```
+
 ```console
 $ quint typecheck main.qnt
  Error [QNT099]: Found cyclic declarations. Use fold and foldl instead of recursion
