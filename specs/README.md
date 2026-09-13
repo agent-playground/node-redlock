@@ -60,7 +60,7 @@ $ npx quint test specs/redlockTest.qnt --main=redlockF2Scenario
 
 | 不變式 | 實例 | `--max-steps` | 實測牆鐘 | 預期 | 實測 |
 |---|---|---|---|---|---|
-| `mutualExclusionOnNodes` | `redlockDefault` | 8 | **164 s** | 無違反 | ✅ 無違反 |
+| `mutualExclusionOnNodes` | `redlockDefault` | 8 | **164–194 s**（兩次實測） | 無違反 | ✅ 無違反 |
 | `INV_VIOLATED_returnsExpiredLock` | `redlockDefault` | 5 | **12 s** | 必須找到反例 | ✅ 反例 + ITF |
 | `INV_VIOLATED_quorumCoverageDecay` | `redlockCrashLoss` | 5 | **10 s** | 必須找到反例 | ✅ 反例 + ITF |
 | `INV_VIOLATED_releaseErrorMasksAbort` | `redlockDefault` | 10 | **95 s** | 必須找到反例 | ✅ 反例 + ITF |
@@ -203,7 +203,7 @@ client 相信的到期時間是 `start + DURATION - DRIFT`，而節點端 key �
 | 5 | 13 s |
 | 6 | 22 s |
 | 7 | 25 s |
-| 8 | **164 s** |
+| 8 | **164 s**（第二次實測 194 s，差異來自機器負載） |
 | 10 | **> 600 s（未完成，逾時終止）** |
 | 12 | 未嘗試（依曲線外推約需數十分鐘至數小時） |
 
@@ -229,7 +229,7 @@ F4 的 ITF 已驗證含 **13 個狀態、2 個 client 同時處於 `CRITICAL`**�
 ＋ typecheck/run/test 約 15 s ≈ **約 16 分鐘**（未計安裝與 Apalache 首次下載）。
 CI 草稿的 job 逾時因此設為 **45 分鐘**，留給冷啟動快取與 runner 變異的餘裕。
 
-**採用的替代證據（依 REQ-11 的授權）**：以 **`--max-steps 8`（164 秒）**
+**採用的替代證據（依 REQ-11 的授權）**：以 **`--max-steps 8`（164–194 秒）**
 作為 CI 的界。這在方法論上是充分的，因為 `mutualExclusionOnNodes` 是
 **結構性成立**的（R1 的鴿籠論證涵蓋所有深度），深度掃描的目的只是抓建模錯誤，
 而 8 步已足以讓 quorum 判定、到期比較、`permitsOf` 過濾三條路徑全部被走過。
