@@ -46,6 +46,7 @@
     ]
   },
   "devDependencies": {
+    "@informalsystems/quint": "0.32.0",
     "@types/ioredis": "^4.28.8",
     "@types/node": "^17.0.21",
     "@typescript-eslint/eslint-plugin": "^5.13.0",
