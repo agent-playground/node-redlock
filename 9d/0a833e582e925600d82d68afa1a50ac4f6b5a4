@@ -1,0 +1,24 @@
+package.json
+  h_1b119f25eaf333 49
+specs/redlock.qnt
+  h_1b119f25eaf333 1-756
+specs/redlockTest.qnt
+  h_1b119f25eaf333 1-215
+specs/traces/INV_VIOLATED_concurrentCriticalSections.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_quorumCoverageDecay.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_returnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9d0a833e582e925600d82d68afa1a50ac4f6b5a4",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
