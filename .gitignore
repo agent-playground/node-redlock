@@ -17,3 +17,5 @@ lib-cov
 
 # Coverage directory used by tools like istanbul
 coverage
+# quint & apalache output
+_apalache-out
