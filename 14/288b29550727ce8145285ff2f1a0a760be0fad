@@ -1,0 +1,22 @@
+specs/README.md
+  h_1b119f25eaf333 67-71,144-147,180-224
+specs/redlock.qnt
+  h_1b119f25eaf333 96-97,99-100,218-223,333-334,458-460,595-597,739-754
+specs/traces/INV_VIOLATED_acquireReturnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_extendReturnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_twoClientsBelieveLock.itf.json
+  h_1b119f25eaf333 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "14288b29550727ce8145285ff2f1a0a760be0fad",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
