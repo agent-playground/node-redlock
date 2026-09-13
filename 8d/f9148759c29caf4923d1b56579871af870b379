@@ -1,0 +1,16 @@
+.gitignore
+  h_1b119f25eaf333 19-21
+specs/README.md
+  h_1b119f25eaf333 1-437
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8df9148759c29caf4923d1b56579871af870b379",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
