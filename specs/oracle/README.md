@@ -4,14 +4,26 @@
 否則無法排除「那只是模型的假象」。本目錄就是做這件事：每個反例對應一個
 用**真實實作**（編譯後的 `dist/esm/index.js`）執行的測試案例。
 
+> **狀態（F1/F5/F2/F6 已修復後）** > `src/index.ts` 已修復 F1 / F5 / F2 / F6 / F7（部分）。因此本目錄的測試分成兩類：
+>
+> - **【已修復】F1 / F5 / F2 / F6** — 反例描述的是**修復前**的行為（base `38f792e`，
+>   也就是上游 `mike-marcacci/node-redlock` 至今的行為）。ITF 軌跡保留在
+>   `../traces/` 作為歷史證據，但測試已改寫為**回歸測試**，斷言修復後的正確行為。
+> - **【仍成立】F3 / F4 / F4(b) / F4(c) / F7 / F8** — 修復後**依然重現**。它們不是
+>   實作瑕疵，而是演算法層與環境假設層的性質（節點遺失 key、諮詢式 abort 的
+>   TOCTOU、無 fencing token）。修復沒有、也不該碰它們。
+>
+> 判別力由**紅綠對照**保證：把整套測試對修復前的 `src/index.ts` 執行，
+> 上面第一類會全部轉紅、第二類維持綠。實測見「紅綠對照」一節。
+
 ## 檔案
 
-| 檔案                       | 內容                                                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `fakeRedis.mjs`            | 可控的假 Redis：忠實實作三段 Lua script 的語意，並支援時序／故障注入與「擋住我的 key 是不是我自己的」觀測。 |
-| `counterexamples.test.mjs` | **11 個測試**：F1/F2/F3/F4/F5/F6/F7/F8 ＋ F4(b) ＋ F4(c) ＋ 1 個陰性對照（跑在假 Redis，無外部依賴）。      |
-| `lua-parity.test.mjs`      | 13 個測試：用**真 Redis** 執行**真實的 script 原文**，逐情境證明假 Redis 的語意一致。                       |
-| `real-redis.test.mjs`      | 4 個測試：真 Redis 端到端（F3/F4/F8 ＋ 陰性對照）。                                                         |
+| 檔案                       | 內容                                                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `fakeRedis.mjs`            | 可控的假 Redis：依**傳入的 script 原文**決定三段 Lua script 的語意，並支援時序／故障注入與「擋住我的 key 是不是我自己的」觀測。 |
+| `counterexamples.test.mjs` | **11 個測試**：F1/F2/F3/F4/F5/F6/F7/F8 ＋ F4(b) ＋ F4(c) ＋ 1 個陰性對照（跑在假 Redis，無外部依賴）。                          |
+| `lua-parity.test.mjs`      | 14 個測試：用**真 Redis** 執行**真實的 script 原文**，逐情境證明假 Redis 的語意一致。                                           |
+| `real-redis.test.mjs`      | 4 個測試：真 Redis 端到端（F3/F4/F8 ＋ 陰性對照）。                                                                             |
 
 ## 如何執行
 
@@ -32,31 +44,49 @@ ORACLE_REDIS_PORT=6379 yarn oracle:redis
 > 因此這兩支 Redis 測試在 `CI` 環境變數存在時，連不上會**直接讓檔案失敗**
 > （`if (process.env.CI) throw`），而不是 skip。
 
-實測結果（quint 0.32.0 / Node 22 / Redis 7-alpine，本機）：
+實測結果（Node 22 / Redis 7-alpine，本機）：
 
 ```
-counterexamples: 11 pass / 0 fail   （約 3s，跑在假 Redis；連續 6 次 0 失敗）
-lua-parity:      13 pass / 0 fail   （真 Redis 驗證假 Redis 的語意）
+counterexamples: 11 pass / 0 fail   （跑在假 Redis，無外部依賴）
+lua-parity:      14 pass / 0 fail   （真 Redis 驗證假 Redis 的語意）
 real-redis:       4 pass / 0 fail   （真 Redis 端到端）
 --------------------------------------------------------------
-合計             28 pass / 0 fail / 0 skipped   （約 3.7 s）
+合計             29 pass / 0 fail / 0 skipped
 ```
+
+## 紅綠對照（判別力的證據）
+
+把**同一套**測試對修復前的 `src/index.ts`（`git show 38f792e:src/index.ts`）
+重建後執行，與對修復後執行的結果並列：
+
+| 套件                       | 修復前 `38f792e`                                      | 修復後 HEAD      |
+| -------------------------- | ----------------------------------------------------- | ---------------- |
+| `counterexamples.test.mjs` | **7 pass / 4 fail**                                   | 11 pass / 0 fail |
+| `lua-parity.test.mjs`      | 11 pass / **3 fail**（2 個 ACQUIRE 情境 ＋ 其父測試） | 14 pass / 0 fail |
+| `src/fixes.test.ts`（ava） | **0 pass / 8 fail**                                   | 8 pass / 0 fail  |
+
+修復前轉紅的正是 F1 / F5 / F2 / F6 四條；F3 / F4 / F4(b) / F4(c) / F7 / F8 與陰性
+對照維持綠——**修復前後都成立**，正如它們應該的那樣。
+
+> 註：`src/fixes.test.ts` 對修復前的 `src/index.ts` 會有 2 個 TypeScript 錯誤
+> （`Lock#extend` 與 `using()` 的簽章在修復中從 1 參數變成 2 參數）。`tsc` 仍會產出
+> JS，所以上表的執行結果有效；型別錯誤本身也是 API 變更的證據。
 
 ## 對照表：Quint 不變式 → 神諭測試
 
-| Quint（模型）                                                       | 神諭測試                                       | 斷言的核心事實                                                                                                                          |
-| ------------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `INV_VIOLATED_acquireReturnsExpiredLock`（F1）                      | `F1: acquire() 在往返超過 TTL 時…`             | `acquire()` **不拋錯**地回傳 `lock.expiration <= Date.now()`；且 `expiration === start + duration - drift`（證明它由過期的 start 算出） |
-| `INV_VIOLATED_extendReturnsExpiredLock`（F5）                       | `F5: extend() 在慢往返下…`                     | `lock.extend()` **不拋錯**地回傳 `replacement.expiration <= Date.now()`                                                                 |
-| `selfBlockedByOwnValue` / `bothClientsFailWithinRetryWindow`（F2）  | `F2: retry 被『自己上一輪留下的 key』擋住`     | 在 retry 的 attempt 中，擋住該節點的 `blocker` **等於 client 自己的 value**（不是別人的 `FOREIGN`）                                     |
-| `INV_VIOLATED_quorumCoverageDecay`（F3）                            | `F3: 節點遺失 key 後…`                         | `lock.expiration > Date.now()`（client 相信）**且**實際持有 value 的節點數 `< quorum`                                                   |
-| `INV_VIOLATED_concurrentCriticalSections`（F4）                     | `F4: 兩個 client 的臨界區重疊`                 | B 進入臨界區的瞬間 A **仍在臨界區內**，且 A 的 `signal.aborted === true`（abort 是諮詢式的）                                            |
-| `INV_VIOLATED_concurrentCriticalSections`（F4，**routine 有檢查**） | `F4(b): routine 檢查了 signal.aborted 才派送…` | A **確實做了**檢查且檢查當時未 abort；`派送 < abort < 效果落地`；B 仍在 A 的臨界區內進入 → **不是「沒檢查」造成的**                     |
-| （F4 的對照組）                                                     | `F4(c) 對照: 每次 await 後都複查…`             | 逐次複查確實讓 A 不再做**新的**臨界工作，但**單一在途操作的效果仍落地於 abort 之後** → 「照 README 做」只能界定、無法消除               |
-| （F6，建模決策 9 排除於 Quint 之外）                                | `F6: routine 在續期途中結束 → …`               | routine 返回時續期確定在途；`using()` 返回後仍有 **殘留 timer**（會在鎖已釋放之後才觸發 extend）                                        |
-| `INV_VIOLATED_releaseErrorMasksAbort`（F7）                         | `F7: release 失敗吃掉 routine 的正確回傳值`    | routine 已產出 `"ROUTINE_RESULT"`、`signal.aborted === true`，但 `using()` 以 `ExecutionError` 失敗                                     |
-| `INV_VIOLATED_twoClientsBelieveLock`（F8）                          | `F8: 兩個 client 同時相信自己持有鎖`           | 同一瞬間兩者的 `lock.expiration > Date.now()`，value 不同，且 A 的真實覆蓋率 `< quorum`                                                 |
-| （陰性對照，非反例）                                                | `陰性對照: 沒有節點崩潰時…`                    | **不**讓節點遺失 key 時，第二個 client 拿不到 quorum → 證明上一個測試的違反來自崩潰，不是測試手法                                       |
+| Quint（模型）                                                                  | 神諭測試                                       | 斷言的核心事實                                                                                                                                            |
+| ------------------------------------------------------------------------------ | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INV_VIOLATED_acquireReturnsExpiredLock`（F1，**已修復**）                     | `F1（已修復）: …丟 ExecutionError…`            | 先決條件：往返超過 TTL、模型述詞 `acquireBelieved <= now` 成立。回歸斷言：`acquire()` 丟 `ExecutionError` 而**不回傳 Lock**，且補償釋放對每個節點都執行過 |
+| `INV_VIOLATED_extendReturnsExpiredLock`（F5，**已修復**）                      | `F5（已修復）: …丟 ExecutionError…`            | 同上；另斷言失敗路徑**主動釋放**已失效的鎖（修復前完全不呼叫 release）                                                                                    |
+| `selfBlockedByOwnValue` / `bothClientsFailWithinRetryWindow`（F2，**已修復**） | `F2（已修復）: 重試不再被自己的 key 擋住`      | 不得再出現任何 `selfBlocked`；且必須真的走到「在**同一顆**節點上覆寫自己舊 key」的路徑（`reacquiredOwn`）；同時對照：別人的 `FOREIGN` 鎖仍然擋得住        |
+| `INV_VIOLATED_quorumCoverageDecay`（F3）                                       | `F3: 節點遺失 key 後…`                         | `lock.expiration > Date.now()`（client 相信）**且**實際持有 value 的節點數 `< quorum`                                                                     |
+| `INV_VIOLATED_concurrentCriticalSections`（F4）                                | `F4: 兩個 client 的臨界區重疊`                 | B 進入臨界區的瞬間 A **仍在臨界區內**，且 A 的 `signal.aborted === true`（abort 是諮詢式的）                                                              |
+| `INV_VIOLATED_concurrentCriticalSections`（F4，**routine 有檢查**）            | `F4(b): routine 檢查了 signal.aborted 才派送…` | A **確實做了**檢查且檢查當時未 abort；`派送 < abort < 效果落地`；B 仍在 A 的臨界區內進入 → **不是「沒檢查」造成的**                                       |
+| （F4 的對照組）                                                                | `F4(c) 對照: 每次 await 後都複查…`             | 逐次複查確實讓 A 不再做**新的**臨界工作，但**單一在途操作的效果仍落地於 abort 之後** → 「照 README 做」只能界定、無法消除                                 |
+| （F6，建模決策 9 排除於 Quint 之外，**已修復**）                               | `F6（已修復）: …返回後不留任何 timer`          | 先決條件：續期確實被觸發、且 routine 返回時它仍在途。回歸斷言：`using()` 返回後殘留 timer 數 **=== 0**（修復前為 1）                                      |
+| `INV_VIOLATED_releaseErrorMasksAbort`（F7）                                    | `F7: release 失敗吃掉 routine 的正確回傳值`    | routine 已產出 `"ROUTINE_RESULT"`、`signal.aborted === true`，但 `using()` 以 `ExecutionError` 失敗                                                       |
+| `INV_VIOLATED_twoClientsBelieveLock`（F8）                                     | `F8: 兩個 client 同時相信自己持有鎖`           | 同一瞬間兩者的 `lock.expiration > Date.now()`，value 不同，且 A 的真實覆蓋率 `< quorum`                                                                   |
+| （陰性對照，非反例）                                                           | `陰性對照: 沒有節點崩潰時…`                    | **不**讓節點遺失 key 時，第二個 client 拿不到 quorum → 證明上一個測試的違反來自崩潰，不是測試手法                                                         |
 
 ## 端到端真 Redis 重現（`real-redis.test.mjs`）
 
@@ -93,16 +123,39 @@ Lua script。若那份重寫有誤，測試就會變成「我的假 Redis 有這
 - 在**真 Redis 7-alpine** 上以 `EVAL` 執行；
 - 對同一組初始 key 狀態，比對真 Redis 與假 Redis 的回傳值，逐情境斷言一致。
 
-覆蓋的 11 個情境：ACQUIRE 空／同 value／不同 value／多 key 部分存在／已過期，
-EXTEND 相符／不符／key 已遺失（**不修復**），RELEASE 相符／不符（**不誤刪**）／不存在，
-外加「EXTEND 真的把 TTL 往後推」的獨立驗證。
+覆蓋的 12 個情境：ACQUIRE 空／同 value／**多 key 中一個是自己的 value**／不同 value／
+多 key 部分被別人佔用／已過期，EXTEND 相符／不符／key 已遺失（**不修復**），
+RELEASE 相符／不符（**不誤刪**）／不存在，外加「EXTEND 真的把 TTL 往後推」的獨立驗證。
 
-**其中三個情境就是反例的語意基礎**：ACQUIRE 的「同 value 也回 0」（F2 的自我阻塞）、
-EXTEND 的「key 已遺失回 0 且不修復」（F3）、RELEASE 的「value 不符不刪」（不誤刪他人）。
+**其中三個情境就是結論的語意基礎**：ACQUIRE 的「同 value 放行」（F2 已修復）、
+EXTEND 的「key 已遺失回 0 且不修復」（F3 仍成立）、RELEASE 的「value 不符不刪」（不誤刪他人）。
 
 假 Redis 另外刻意讓 `evalsha` 一律回 `NOSCRIPT`，逼真實程式碼走
 `eval` fallback（`src/index.ts:574-595`），因此那條路徑也被測到
 （測試中斷言 `evalsha > 0 && eval > 0`）。
+
+### 這道防線真的擋下過一次漂移（F2 修復時的實例）
+
+F2 修好之後，`src/index.ts` 的 `ACQUIRE_SCRIPT` 從「`exists` 就擋」改成「value 不同才擋」，
+但 `fakeRedis.mjs` 當時**沒有跟著改**。結果是：
+
+- `counterexamples.test.mjs` 的 F2 測試**照樣綠燈**——它「重現」了一個在真實程式碼裡
+  **已經不存在**的缺陷，因為假 Redis 還停在舊語意。這正是循環論證的樣子。
+- `lua-parity.test.mjs` **抓到了**：情境「ACQUIRE key 已存在（同 value）」在真 Redis 上
+  回 `1`，假 Redis 回 `0` → 不一致 → 失敗。
+
+兩個對策已經落地：
+
+1. **假 Redis 的 ACQUIRE 語意改為由 script 原文推導**（`_acquire` 的 `valueAware`）。
+   寫死任何一版語意，都等於把 mock 凍結在某一版 src 上，紅綠對照會失去意義。
+2. **script 判別式集中管理**（`isAcquireScript` / `isExtendScript` / `isReleaseScript`）。
+   起因是一個很容易踩的陷阱：修復後的 **ACQUIRE_SCRIPT 也含有
+   `redis.call("get", key) ~= ARGV[1]`**，而多處測試正是用這個字串辨識 EXTEND。
+   誤判的後果不是測試失敗，而是**測試在「從未發生續期」的情況下綠燈**。
+   只有 `redis.call("exists"` 是 ACQUIRE 獨有的，而且修復前後都存在。
+
+> **給後續維護者**：動了 `src/index.ts` 的任何一段 Lua，就必須跑
+> `ORACLE_REDIS_PORT=<port> yarn oracle:redis`。只跑 `oracle:mock` **不會**發現漂移。
 
 ## F4 的真正結論：檢查 signal 只能「界定」，不能「消除」（F4(b) / F4(c)）
 
@@ -135,28 +188,37 @@ A 在「同一個 tick 內」派送臨界區寫入   ← 檢查與派送之間�
 > 這是本目錄資訊量最高的一條，也是對 README 那句
 > "Make sure any attempted lock extension has not failed" 的直接反例。
 
-## 一個額外發現（不在 F1–F9 之內）
+## 一個額外發現（不在 F1–F9 之內）——**已修復**
 
 寫 F4/F7 時發現：**`using()` 的 per-call `settings` 不會傳給續期**。
 
-`using()` 內部是 `lock = await lock.extend(duration)`（`src/index.ts:727`），
-而 `Lock.extend(duration)` 呼叫 `this.redlock.extend(this, duration)`
-（`src/index.ts:159-161`）——**沒有把 settings 帶進去**。因此續期永遠使用
-**建構子層**的設定。
+修復前，`using()` 內部是 `lock = await lock.extend(duration)`，而
+`Lock.extend(duration)` 呼叫 `this.redlock.extend(this, duration)`——**沒有把
+settings 帶進去**，因此續期永遠使用**建構子層**的設定。
 
-後果：`redlock.using(res, 1000, { retryCount: 0 }, routine)` 的 acquire 只試 1 次，
-但續期失敗時仍會依預設 `retryCount: 10 / retryDelay: 200` 內部重試約 2–3 秒
-才回到外層判斷 abort。本目錄的 F4/F7 測試因此必須把設定放在**建構子**才可預測
-（見測試中的註解）。這是一個可觀測的行為落差，建議另開工單評估。
+修復後：`Lock.extend(duration, settings?)` 新增第二參數，`using()` 會把
+「建構子設定 ⊕ per-call 設定」的合併結果傳下去。回歸測試見
+`src/fixes.test.ts` 的兩條 `settings pass-through`（一條攔截 `Lock#extend` 直接
+觀測傳入的參數，一條斷言 `extend` 真的遵守拿到的 `retryCount`）。
+
+本目錄的 F4/F7 測試**仍然把設定放在建構子**——不是因為 per-call 不管用，而是
+這樣讀起來就不必再依賴合併規則。
+
+> **順帶記下一個計數陷阱**：不能用「續期的 eval 次數」去推斷 `retryCount` 有沒有
+> 傳到。續期失敗時 `using()` 會在 `running && lock.expiration > Date.now()` 期間
+> **遞迴重試**；`retryDelay: 0` 時那是一段純 microtask 迴圈，實測在約 50ms 內產生
+> **4149 次** eval。要驗證 `retryCount`，得直接呼叫 `lock.extend(...)`，避開
+> `using()` 的迴圈。
 
 ## 本神諭**不**證明的事（誠實界線）
 
-| 項目                              | 說明                                                                                                                                                                                                                                                       |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **不是 ITF 軌跡重放**             | 本目錄重現的是**同一個情境**並斷言**同一個述詞**，不是把 `specs/traces/*.itf.json` 的每一步餵給實作。真正的逐步重放需要控制 `Date.now()` 與逐節點故障注入，而真實程式碼沒有為此暴露介面。                                                                  |
-| **三個 db 不是三個真正的節點**    | `real-redis.test.mjs` 用同一個 Redis 的三個 db 模擬獨立節點，共用 process 與時鐘。對這三段 script 的語意等價，但無法表達「節點之間時鐘不同步」或真正的網路分割。                                                                                           |
-| **假 Redis 只對三段 script 對等** | 對等性已驗證於本規格使用的 ACQUIRE/EXTEND/RELEASE 與 TTL 行為；不含 Redis 的其他語意（複寫、持久化、cluster redirection、NOSCRIPT 以外的錯誤）。                                                                                                           |
-| **F6 已有神諭**                   | F6（timer 洩漏）依建模決策 9 排除於 Quint 之外，但**已有真實測試**：`F6: routine 在續期途中結束…` 用「routine 等到續期真的開始才返回」使「返回時續期在途」**確定成立**（不靠 sleep 猜時序），再追蹤全域 `setTimeout` 證明 `using()` 返回後仍有殘留 timer。 |
-| **F9 沒有神諭**                   | 時鐘跳躍在目前的單一時鐘模型下**無法證否**（見 `../README.md` 的「F9 的建模缺陷」），因此也沒有可重現的反例。                                                                                                                                              |
-| **時序測試用真實牆鐘**            | F4/F7 有毫秒級的時間邊界。緩解方式：以 `pollUntil` 輪詢狀態而非固定 `sleep`，且斷言留有裕度。在極度負載的機器上仍可能需要重跑一次。                                                                                                                        |
-| **用的是建構子設定**              | 為了讓續期時序可預測，F4/F7 把設定放在建構子——這正是上節「額外發現」所指的行為。                                                                                                                                                                           |
+| 項目                              | 說明                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **不是 ITF 軌跡重放**             | 本目錄重現的是**同一個情境**並斷言**同一個述詞**，不是把 `specs/traces/*.itf.json` 的每一步餵給實作。真正的逐步重放需要控制 `Date.now()` 與逐節點故障注入，而真實程式碼沒有為此暴露介面。                                                                                                                                                                                                                                               |
+| **三個 db 不是三個真正的節點**    | `real-redis.test.mjs` 用同一個 Redis 的三個 db 模擬獨立節點，共用 process 與時鐘。對這三段 script 的語意等價，但無法表達「節點之間時鐘不同步」或真正的網路分割。                                                                                                                                                                                                                                                                        |
+| **假 Redis 只對三段 script 對等** | 對等性已驗證於本規格使用的 ACQUIRE/EXTEND/RELEASE 與 TTL 行為；不含 Redis 的其他語意（複寫、持久化、cluster redirection、NOSCRIPT 以外的錯誤）。                                                                                                                                                                                                                                                                                        |
+| **F6 已有神諭**                   | F6（timer 洩漏）依建模決策 9 排除於 Quint 之外，但**已有真實測試**：`F6（已修復）…` 用「routine 等到續期真的開始才返回」使「返回時續期在途」**確定成立**（不靠 sleep 猜時序），再追蹤全域 `setTimeout` 斷言 `using()` 返回後殘留 timer 為 0。⚠️ 測試手法本身**不得建立任何 `setTimeout`**——原本用 `sleep()` 製造時間窗，那個 sleep 的 timer 會被算進殘留數，使修復前的 `leaked > 0` 可能只是測到自己的 sleep。現已改用純 Promise 閘門。 |
+| **F9 沒有神諭**                   | 時鐘跳躍在目前的單一時鐘模型下**無法證否**（見 `../README.md` 的「F9 的建模缺陷」），因此也沒有可重現的反例。                                                                                                                                                                                                                                                                                                                           |
+| **時序測試用真實牆鐘**            | F4/F7 有毫秒級的時間邊界。緩解方式：以 `pollUntil` 輪詢狀態而非固定 `sleep`，且斷言留有裕度。在極度負載的機器上仍可能需要重跑一次。                                                                                                                                                                                                                                                                                                     |
+| **用的是建構子設定**              | 為了讓續期時序可預測，F4/F7 把設定放在建構子。per-call 設定現已可用（見上節），這只是讀起來比較直接。                                                                                                                                                                                                                                                                                                                                   |
+| **修復的正確性未經模型檢查**      | F1/F5/F2/F6 的修復**只有這些回歸測試**背書，`specs/redlock.qnt` 描述的仍是**修復前**的實作。「修好之後不變式就成立了」這件事**沒有被 `quint verify` 驗證過**——要有那個結論，得先把模型改成 as-fixed 再重跑，那是獨立的一顆單位。                                                                                                                                                                                                        |

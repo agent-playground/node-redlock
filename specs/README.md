@@ -192,13 +192,42 @@ client 相信的到期時間是 `start + DURATION - DRIFT`，而節點端 key �
 | **F3** extend 不修復少數節點         | ✅                        | `INV_VIOLATED_quorumCoverageDecay`，5 步 / 10 s，ITF 5 states                                                                  | **需 `ENABLE_CRASH_LOSS=true`**；預設情境下已證明不可違反（反例需非對稱節點失效）                                          |
 | **F4** 臨界區重疊                    | ✅                        | `INV_VIOLATED_concurrentCriticalSections`，12 步 / 676 s，ITF 13 states                                                        | 承載安全性結論的那一條；反例恰好等於 `max-steps` 上限                                                                      |
 | **F5** `extend()` check-then-act     | ✅                        | `INV_VIOLATED_extendReturnsExpiredLock`，8 步 / 25 s，ITF 8 states                                                             | 專屬不變式，**可獨立於 F1 成立**                                                                                           |
-| **F6** timer 洩漏                    | ❌（Quint 之外）          | `specs/oracle/counterexamples.test.mjs` → `F6: routine 在續期途中結束…`（真實測試，非 skip）                                   | 依建模決策 9 **刻意排除**於 Quint 之外（需 JS event loop），但**已有神諭測試證明它存在**                                   |
+| **F6** timer 洩漏                    | ❌（Quint 之外）          | `specs/oracle/counterexamples.test.mjs` → `F6（已修復）…`（真實測試，非 skip）                                                 | 依建模決策 9 **刻意排除**於 Quint 之外（需 JS event loop），但**已有神諭測試**；現為回歸測試                               |
 | **F7** release 失敗遮蔽錯誤          | ✅                        | `INV_VIOLATED_releaseErrorMasksAbort`，10 步 / 190 s，ITF 10 states                                                            | —                                                                                                                          |
 | **F8** 節點崩潰遺失 key（Kleppmann） | ✅                        | `INV_VIOLATED_twoClientsBelieveLock`，8 步 / 26 s，ITF 8 states                                                                | **需 `ENABLE_CRASH_LOSS=true`**；預設情境無反例（陰性對照通過）                                                            |
 | **F9** 時鐘跳躍                      | ❌ **模型無法證否**       | —                                                                                                                              | **見下方「F9 的建模缺陷」**                                                                                                |
 
 計數：**6 條有反例**（F1、F3、F4、F5、F7、F8）、**1 條以 witness 呈現**（F2）、
 **1 條刻意排除**（F6）、**1 條模型表達不出來**（F9）。
+
+## ⚠️ 本規格描述的是 **as-is（修復前）** 的實作
+
+`src/index.ts` 後來修復了 **F1 / F5 / F2 / F6** 與 **F7 的一半**，但
+**`redlock.qnt` 沒有跟著改**。這件事必須講清楚，否則整份文件會被誤讀：
+
+| 讀者可能以為                           | 實際情況                                                                                      |
+| -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 上表的反例描述**目前**的實作           | ❌ 它們描述的是 base `38f792e`，也就是上游 `mike-marcacci/node-redlock` **至今**的行為        |
+| 修復之後不變式就成立了                 | ❌ **沒有被 `quint verify` 驗證過**。模型仍是 as-is，要有那個結論必須改成 as-fixed 再全量重跑 |
+| `specs/traces/*.itf.json` 是現況的反例 | ❌ 它們是**歷史證據**：修復前確實可達的路徑                                                   |
+
+**修復的正確性目前只由回歸測試背書**，證據是紅綠對照（同一套測試對修復前的
+`src/index.ts` 全數轉紅）：
+
+| 套件                                    | 修復前 `38f792e`                                      | 修復後 HEAD      |
+| --------------------------------------- | ----------------------------------------------------- | ---------------- |
+| `specs/oracle/counterexamples.test.mjs` | 7 pass / **4 fail**                                   | 11 pass / 0 fail |
+| `specs/oracle/lua-parity.test.mjs`      | 11 pass / **3 fail**（2 個 ACQUIRE 情境 ＋ 其父測試） | 14 pass / 0 fail |
+| `src/fixes.test.ts`（ava）              | **0 pass / 8 fail**                                   | 8 pass / 0 fail  |
+
+轉紅的正是 F1 / F5 / F2 / F6；**F3 / F4 / F4(b) / F4(c) / F7 / F8 修復前後都成立**
+——它們是演算法層與環境假設層的性質（節點遺失 key、諮詢式 abort 的 TOCTOU、
+無 fencing token），不是實作瑕疵。
+
+**後續項（獨立單位）**：把 `redlock.qnt` 改成 as-fixed 並全量重跑，才能回答
+「修復是否真的讓 `acquireReturnsExpiredLock` / `extendReturnsExpiredLock` 不再可達」。
+那會動到 `acquire`／`extend` 的動作定義與 4 條不變式，且需重跑約 20 分鐘的驗證，
+不應與本次的測試修正混在同一顆 diff 裡。
 
 ## F2 的保真度修正（本次修訂）
 

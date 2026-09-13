@@ -94,12 +94,21 @@ const SCENARIOS = [
     expected: 1,
   },
   {
-    name: "ACQUIRE key 已存在（**同 value**）→ 回 0（F2 的自我阻塞語意）",
+    name: "ACQUIRE key 已存在（**同 value**）→ 回 #KEYS（F2 已修復：自己的 key 不再擋住自己）",
     script: "acquireScript",
     keys: ["a"],
     argv: ["V1", "5000"],
     seed: [{ key: "a", value: "V1", ttl: 5000 }],
-    expected: 0,
+    expected: 1,
+  },
+  {
+    // F2 修復的重試路徑本體：上一輪在 a 上拿到、b 還沒拿到，這一輪必須能補齊。
+    name: "ACQUIRE 多 key：一個是自己的 value、一個空 → 回 #KEYS（F2 的重試路徑）",
+    script: "acquireScript",
+    keys: ["a", "b"],
+    argv: ["V1", "5000"],
+    seed: [{ key: "a", value: "V1", ttl: 5000 }],
+    expected: 2,
   },
   {
     name: "ACQUIRE key 已存在（**不同 value**）→ 回 0",

@@ -6,17 +6,40 @@
 //
 // 忠實度聲明（重要）：
 //   本檔以 JS 重新實作 ACQUIRE_SCRIPT / EXTEND_SCRIPT / RELEASE_SCRIPT 的語意
-//   （逐行對照 src/index.ts:12-58），**不是**執行真的 Lua。它刻意保留三個關鍵
+//   （逐行對照 src/index.ts:12-60），**不是**執行真的 Lua。它刻意保留三個關鍵
 //   性質，因為反例全都建立在它們之上：
-//     1. ACQUIRE 用 `exists` 判斷，**不問 key 是誰的**
+//     1. ACQUIRE 的擋鎖條件**由傳入的 script 原文決定**（見 _acquire 的
+//        valueAware 判定）：舊版用 `exists`，不問 key 是誰的；F2 修復後改成
+//        「只有 value 不同才擋」。
 //     2. EXTEND 必須「所有 key 的 value 都相符」才在該節點投贊成，且**不修復**已遺失的 key
 //     3. RELEASE 只刪除 value 相符的 key，回傳「刪掉的 key 數」
 //   evalsha 一律丟 NOSCRIPT，逼真實程式碼走 `eval` 的 fallback 路徑
 //   （src/index.ts:574-595），因此該路徑也被測到。
+//
+// 為什麼 (1) 要從 script 原文推導，而不是寫死目前的語意：
+//   寫死等於把「本 mock 的假設」凍結在某一版 src 上。一旦 src 的 Lua 改了而
+//   mock 沒跟上，所有基於 mock 的測試都會**繼續綠燈地重現一個已經不存在的
+//   缺陷**——那是循環論證，也正是 F2 修復後實際發生過的事。改成從原文推導後，
+//   同一份 mock 對修復前／修復後的 src 都忠實，紅綠對照才有意義。
+//   最終的忠實度保證仍然來自 lua-parity.test.mjs（對真 Redis 逐情境比對）。
 
 const NOSCRIPT = "NOSCRIPT No matching script. Please use EVAL.";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- script 判別式（測試攔截 eval 時務必使用這些，不要自己拼字串）---
+//
+// 陷阱：F2 修復後的 ACQUIRE_SCRIPT **也含有** `redis.call("get", key) ~= ARGV[1]`
+// （它現在要比對「擋住我的 key 是不是我自己的」）。任何只用該字串來辨識 EXTEND
+// 的攔截器，都會把 ACQUIRE 誤判成 EXTEND，讓測試在**從未發生續期**的情況下
+// 照樣綠燈。只有 `redis.call("exists"` 是 ACQUIRE 獨有的。
+const EXTEND_MARKER = 'redis.call("get", key) ~= ARGV[1]';
+const ACQUIRE_MARKER = 'redis.call("exists"';
+
+export const isAcquireScript = (script) => script.includes(ACQUIRE_MARKER);
+export const isExtendScript = (script) =>
+  script.includes(EXTEND_MARKER) && !script.includes(ACQUIRE_MARKER);
+export const isReleaseScript = (script) => script.includes('redis.pcall("del"');
 
 export class FakeRedis {
   constructor(name) {
@@ -95,35 +118,59 @@ export class FakeRedis {
     // 這個順序是 F1/F5 能成立的前提：key 在請求抵達時被寫入／續期，
     // 而 client 端算出的 expiration 是從「送出前」的 start 起算的。
     let result;
-    if (script.includes('redis.call("exists"')) result = this._acquire(keys, argv);
-    else if (script.includes('redis.call("get", key) ~= ARGV[1]')) result = this._extend(keys, argv);
-    else if (script.includes('redis.pcall("del"')) result = this._release(keys, argv);
+    if (isAcquireScript(script)) result = this._acquire(keys, argv, script);
+    else if (isExtendScript(script)) result = this._extend(keys, argv);
+    else if (isReleaseScript(script)) result = this._release(keys, argv);
     else throw new Error(`FakeRedis: 認不得的 script：${script.slice(0, 60)}`);
 
     if (this.delayMs > 0) await sleep(this.delayMs); // 回應延遲
     return result;
   }
 
-  // ACQUIRE_SCRIPT：任一 key 存在即回 0（**不問是誰的**）；否則全部 SET 並回 #KEYS
-  _acquire(keys, argv) {
+  // ACQUIRE_SCRIPT — 兩種語意，由傳入的 script 原文決定（見檔頭忠實度聲明）：
+  //   舊版（F2 修復前）：任一 key 存在即回 0（**不問是誰的**）→ 自我阻塞
+  //   新版（F2 修復後）：只有「存在且 value 不同」才回 0；同 value 視為自己上一
+  //                      輪寫下的 key，放行並覆寫 TTL
+  // 兩版都是「否則全部 SET 並回 #KEYS」。
+  _acquire(keys, argv, script = "") {
     const value = argv[0];
     const ttl = Number(argv[1]);
+    // 新版 ACQUIRE 在 exists 分支內多一層 value 比對；舊版沒有這一行。
+    const valueAware = script.includes('redis.call("get", key) ~= ARGV[1]');
+
+    // 本次呼叫是否覆寫了「已經屬於自己」的既有 key（= F2 修復後的重試路徑）
+    let reacquiredOwn = false;
+
     for (const k of keys) {
-      if (this.exists(k)) {
-        const blocker = this.get(k);
-        // 與 Quint 模型的 isSelfBlock 同一定義：擋住我的 key 是不是我自己的 value
-        this.log.acquire.push({
-          node: this.name,
-          key: k,
-          granted: false,
-          blocker,
-          selfBlocked: blocker === value,
-        });
-        return 0;
+      if (!this.exists(k)) continue;
+      const blocker = this.get(k);
+
+      if (valueAware && blocker === value) {
+        reacquiredOwn = true;
+        continue;
       }
+
+      // 與 Quint 模型的 isSelfBlock 同一定義：擋住我的 key 是不是我自己的 value
+      this.log.acquire.push({
+        node: this.name,
+        key: k,
+        granted: false,
+        blocker,
+        selfBlocked: blocker === value,
+        reacquiredOwn: false,
+      });
+      return 0;
     }
+
     for (const k of keys) this.set(k, value, ttl);
-    this.log.acquire.push({ node: this.name, key: keys[0], granted: true, blocker: null, selfBlocked: false });
+    this.log.acquire.push({
+      node: this.name,
+      key: keys[0],
+      granted: true,
+      blocker: null,
+      selfBlocked: false,
+      reacquiredOwn,
+    });
     return keys.length;
   }
 

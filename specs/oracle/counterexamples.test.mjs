@@ -8,12 +8,32 @@
 // 每個測試的標題都標明它對應的 Quint 不變式／witness 名稱。
 // 斷言的內容刻意與模型中的述詞一致（例如「擋住我的 key 是不是我自己的」、
 // 「相信自己持有的人數」、「真實覆蓋率是否跌破 quorum」）。
+//
+// ---------------------------------------------------------------------------
+// 本檔的測試分成兩類，標題已標示，不要混為一談：
+//
+//   【已修復】F1 / F5 / F2 / F6 —— 這些反例描述的是**修復前**的行為
+//       （base 38f792e，也就是上游 mike-marcacci/node-redlock 至今的行為）。
+//       對應的 ITF 軌跡保留在 specs/traces/ 作為歷史證據，但本檔的測試已改為
+//       **回歸測試**：斷言修復後的正確行為。把它們對修復前的 dist 執行會失敗
+//       ——那正是它們的判別力來源。
+//
+//   【仍成立】F3 / F4 / F4(b) / F4(c) / F7 / F8 —— 這些反例在修復後**依然重現**，
+//       因為它們不是實作瑕疵，而是演算法層與環境假設層的性質（節點遺失 key、
+//       諮詢式 abort 的 TOCTOU、無 fencing token）。修復沒有、也不該碰它們。
+// ---------------------------------------------------------------------------
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import Redlock, { ExecutionError } from "../../dist/esm/index.js";
-import { makeNodes, mergedLog, resetNodes, sleep } from "./fakeRedis.mjs";
+import {
+  isExtendScript,
+  makeNodes,
+  mergedLog,
+  resetNodes,
+  sleep,
+} from "./fakeRedis.mjs";
 
 const RES = "r";
 const drift = (duration) => Math.round(0.01 * duration) + 2;
@@ -30,10 +50,17 @@ async function pollUntil(pred, timeoutMs, label) {
 }
 
 // ---------------------------------------------------------------------------
-// F1 — acquire() 缺 validity <= 0 檢查
+// F1【已修復】— acquire() 缺 validity <= 0 檢查
 // 對應 Quint: INV_VIOLATED_acquireReturnsExpiredLock
+// 軌跡：specs/traces/INV_VIOLATED_acquireReturnsExpiredLock.itf.json
+//
+// 修復前：往返超過 TTL 時，acquire() 仍回傳一個 expiration 已在過去的 Lock，
+//         而且**完全不報錯**——呼叫端以為自己持有鎖。
+// 修復後：偵測到 validity 已耗盡即丟 ExecutionError，並走既有的補償釋放路徑。
+//
+// 判別力：對修復前的 dist 執行會失敗（它不丟錯，而是回傳過期鎖）。
 // ---------------------------------------------------------------------------
-test("F1: acquire() 在往返超過 TTL 時回傳『已過期卻無錯誤』的鎖", async () => {
+test("F1（已修復）: acquire() 在往返超過 TTL 時丟 ExecutionError，不再回傳過期鎖", async () => {
   const nodes = makeNodes(3);
   const redlock = new Redlock(nodes);
 
@@ -42,38 +69,54 @@ test("F1: acquire() 在往返超過 TTL 時回傳『已過期卻無錯誤』的�
 
   const duration = 60;
   const t0 = Date.now();
-  const lock = await redlock.acquire([RES], duration); // 不得拋錯
+  let lock;
+  let error;
+  try {
+    lock = await redlock.acquire([RES], duration);
+  } catch (e) {
+    error = e;
+  }
   const t1 = Date.now();
 
-  assert.ok(t1 - t0 >= 120, `acquire 應該真的慢（實際 ${t1 - t0}ms）`);
-
+  // 先決條件：本測試真的落在 F1 的情境裡（往返超過 TTL、模型述詞成立）。
   // 模型的述詞：acquireBelieved(cs) = acquireStart + DURATION - DRIFT。
-  // 注意 start 是程式碼在 _attemptOperation 內部取的（src/index.ts:481），
-  // 會 >= 這裡的 t0，故只斷言在數毫秒的排程裕度內相符。
-  const expected = t0 + duration - drift(duration);
+  assert.ok(t1 - t0 >= 120, `acquire 應該真的慢（實際 ${t1 - t0}ms）`);
   assert.ok(
-    Math.abs(lock.expiration - expected) <= 5,
-    `expiration 的算法與模型一致（實際 ${lock.expiration}，預期約 ${expected}）`
+    t0 + duration - drift(duration) <= t1,
+    "先決條件：acquireBelieved <= now（F1 的反例條件成立）"
   );
 
-  // 反例本體（一）：回傳的鎖已經過期，而 acquire() 沒有任何報錯
-  assert.ok(
-    lock.expiration <= t1,
-    `鎖已過期（expiration=${lock.expiration} <= now=${t1}）卻照樣回傳`
+  // 回歸斷言：不得再回傳過期鎖，而要明確失敗
+  assert.equal(lock, undefined, "不得回傳任何 Lock");
+  assert.ok(error instanceof ExecutionError, `應丟 ExecutionError，實際 ${error}`);
+  assert.match(
+    error.message,
+    /The lock validity time has elapsed before quorum was achieved\./
   );
-  // 反例本體（二）：expiration 明顯**早於**回應抵達時間
-  // → 它是由送出前的 start 算出的，而非回應抵達時間。這是 F1 的根因。
+
+  // 補償釋放確實被觸發（修復前這條路徑根本不會執行，因為 acquire 成功了）
+  const log = mergedLog(nodes);
   assert.ok(
-    t1 - lock.expiration >= 30,
-    `expiration 應遠早於回應抵達（差距僅 ${t1 - lock.expiration}ms）`
+    log.release.length >= nodes.length,
+    `失敗路徑應對每個節點嘗試釋放（實際 ${log.release.length} 次）`
+  );
+  assert.equal(
+    nodes.every((n) => n.get(RES) === null),
+    true,
+    "所有節點上都不得留下本次的殘留 key"
   );
 });
 
 // ---------------------------------------------------------------------------
-// F5 — extend() 的 check-then-act；replacement Lock 同樣缺 validity 檢查
+// F5【已修復】— extend() 的 check-then-act；replacement Lock 同樣缺 validity 檢查
 // 對應 Quint: INV_VIOLATED_extendReturnsExpiredLock
+// 軌跡：specs/traces/INV_VIOLATED_extendReturnsExpiredLock.itf.json
+//
+// 修復前：extend() 回傳一個已過期的 replacement Lock，且不報錯。
+// 修復後：丟 ExecutionError，並主動釋放這把已經失效的鎖（避免它繼續佔住節點
+//         直到 TTL 自然到期）。
 // ---------------------------------------------------------------------------
-test("F5: extend() 在慢往返下回傳已過期的 replacement Lock", async () => {
+test("F5（已修復）: extend() 在慢往返下丟 ExecutionError，並釋放已失效的鎖", async () => {
   const nodes = makeNodes(3);
   const redlock = new Redlock(nodes);
 
@@ -81,105 +124,133 @@ test("F5: extend() 在慢往返下回傳已過期的 replacement Lock", async ()
   const lock = await redlock.acquire([RES], duration);
   assert.ok(lock.expiration > Date.now(), "先決條件：取得時鎖仍有效");
 
+  resetNodes(nodes); // 只觀測 extend 階段產生的記錄
+
   // 讓 extend 的往返超過 TTL
   for (const n of nodes) n.delayMs = 120;
   const t0 = Date.now();
-  const replacement = await lock.extend(duration); // 不得拋錯
-  const t1 = Date.now();
-
-  assert.ok(t1 - t0 >= 120, `extend 應該真的慢（實際 ${t1 - t0}ms）`);
-
-  // 同 F1：start 由程式碼內部取得（src/index.ts:481），只斷言數毫秒裕度內相符
-  const expected = t0 + duration - drift(duration);
-  assert.ok(
-    Math.abs(replacement.expiration - expected) <= 5,
-    `replacement 的算法與模型一致（實際 ${replacement.expiration}，預期約 ${expected}）`
-  );
-  assert.ok(
-    replacement.expiration <= t1,
-    `replacement 已過期（expiration=${replacement.expiration} <= now=${t1}）`
-  );
-  assert.ok(
-    t1 - replacement.expiration >= 30,
-    `replacement 的 expiration 應遠早於回應抵達（差距僅 ${t1 - replacement.expiration}ms）`
-  );
-});
-
-// ---------------------------------------------------------------------------
-// F2 — ACQUIRE_SCRIPT 用 exists 比對，不問 key 是誰的
-// 對應 Quint: witness selfBlockedByOwnValue / bothClientsFailWithinRetryWindow
-// ---------------------------------------------------------------------------
-test("F2: retry 被『自己上一輪留下的 key』擋住（selfBlocked）", async () => {
-  const nodes = makeNodes(3);
-  const redlock = new Redlock(nodes);
-
-  // node2 / node3 被別人佔住；node1 空閒
-  nodes[1].occupy(RES, "FOREIGN", 60_000);
-  nodes[2].occupy(RES, "FOREIGN", 60_000);
-
+  let replacement;
   let error;
   try {
-    // retryCount=1 → 兩次 attempt，第二次會撞到第一次留下的自己的 key
-    await redlock.acquire([RES], 60_000, { retryCount: 1, retryDelay: 10, retryJitter: 0 });
+    replacement = await lock.extend(duration);
   } catch (e) {
     error = e;
   }
+  const t1 = Date.now();
 
-  assert.ok(error instanceof ExecutionError, "兩次 attempt 都無法達成 quorum");
+  assert.ok(t1 - t0 >= 120, `extend 應該真的慢（實際 ${t1 - t0}ms）`);
+  assert.ok(
+    t0 + duration - drift(duration) <= t1,
+    "先決條件：replacement 的 validity 已耗盡（F5 的反例條件成立）"
+  );
+
+  assert.equal(replacement, undefined, "不得回傳任何 replacement Lock");
+  assert.ok(error instanceof ExecutionError, `應丟 ExecutionError，實際 ${error}`);
+  assert.match(
+    error.message,
+    /The lock validity time has elapsed before extension was achieved\./
+  );
+
+  // 修復後的 extend 失敗路徑會主動釋放；修復前完全不會呼叫 release
   const log = mergedLog(nodes);
-  const selfBlocked = log.acquire.filter((e) => e.selfBlocked);
   assert.ok(
-    selfBlocked.length > 0,
-    "至少一次被『自己的 value』擋住（= 模型的 isSelfBlock）"
-  );
-  // 擋住我的不是 FOREIGN（別人的鎖），而是我自己上一輪寫進去的 value
-  assert.ok(
-    selfBlocked.every((e) => e.blocker !== "FOREIGN"),
-    `擋住者應為自己的 value，實際 blocker=${selfBlocked.map((e) => e.blocker)}`
-  );
-  // NOSCRIPT fallback 路徑確實被走到（src/index.ts:574-595）
-  assert.ok(log.evalsha > 0 && log.eval > 0, "evalsha→NOSCRIPT→eval fallback 被執行");
-
-  // --- 判別力：擋住我的必須是**同一顆**我上一輪寫過的節點 ---
-  // 「acquire 遇到既有 key 就失敗」是鎖的定義，不是缺陷；能證明 F2 的只有
-  // 「第 1 次 attempt 拿到 node1，第 2 次 attempt 被 node1 上自己的 key 擋住」。
-  const node1 = log.acquire.filter((e) => e.node === "node1");
-  assert.ok(node1.some((e) => e.granted), "第 1 次 attempt 在 node1 上取得（vote for）");
-  assert.ok(
-    node1.some((e) => e.selfBlocked),
-    "第 2 次 attempt 在**同一顆** node1 上被自己的 value 擋住"
-  );
-  // 反之，node2/node3 的擋住者是 FOREIGN（別人的鎖），不是自己 —— 兩類必須分開，
-  // 否則「自我阻塞」與「一般競爭」在斷言上無法區分。
-  const foreignBlocked = log.acquire.filter((e) => e.blocker === "FOREIGN");
-  assert.ok(foreignBlocked.length > 0, "node2/node3 由 FOREIGN 擋住（一般競爭）");
-
-  // --- 忠實度界線（Q9b）：危害只存在於「單次 acquire() 的重試窗口之內」---
-  // acquire() 的失敗路徑會做補償釋放（src/index.ts:330-340），所以殘留 key
-  // **不會**存活到呼叫返回之後。模型若允許 client 停在 IDLE 且帶著殘留 key
-  // 自由停留，就是一個真實到不了的過度近似。
-  assert.equal(nodes[0].get(RES), null, "補償釋放已清掉 node1 的殘留 key");
-  assert.ok(
-    log.release.some((e) => e.node === "node1" && e.deleted === 1),
-    "node1 的殘留 key 是由 acquire() 的補償釋放清除的"
+    log.release.length >= nodes.length,
+    `失敗路徑應對每個節點嘗試釋放（實際 ${log.release.length} 次）`
   );
 });
 
 // ---------------------------------------------------------------------------
-// F6 — using() 的 timer 洩漏：routine 在「續期仍在途中」時結束
+// F2【已修復】— ACQUIRE_SCRIPT 原本用 exists 比對，不問 key 是誰的
+// 對應 Quint: witness selfBlockedByOwnValue / bothClientsFailWithinRetryWindow
+//
+// 修復前：同一次 acquire() 的第 2 次 attempt，會被**自己第 1 次 attempt 寫下的
+//         key** 擋住（`exists` 不看 value）——演算法明確要求「重試前釋放所有
+//         實例」，實作兩者都沒做。
+// 修復後：ACQUIRE_SCRIPT 只在「存在且 value 不同」時才擋；同 value 視為自己的
+//         殘留 key，放行並覆寫 TTL。等價於演算法要求的「重試前先清乾淨」。
+//
+// 判別力（兩條互相獨立）：
+//   1. 不得再出現任何 selfBlocked
+//   2. 必須真的走到「node1 上帶著自己的舊 key 再次取得」這條路徑（reacquiredOwn）
+// 對修復前的 dist 執行時兩條都會失敗——注意假 Redis 是**依 script 原文**決定
+// 語意的（見 fakeRedis.mjs 檔頭），所以這個紅綠對照是有效的。
+// ---------------------------------------------------------------------------
+test("F2（已修復）: 重試不再被『自己上一輪留下的 key』擋住", async () => {
+  const nodes = makeNodes(3);
+  const redlock = new Redlock(nodes);
+
+  // node2 / node3 被別人佔住，但只佔 120ms；node1 空閒。
+  // attempt1（t≈0）  ：只拿到 node1（1 票 < quorum 2）→ 失敗
+  // attempt2（t≈200）：FOREIGN 已到期，而 node1 上還留著自己上一輪的 key
+  nodes[1].occupy(RES, "FOREIGN", 120);
+  nodes[2].occupy(RES, "FOREIGN", 120);
+
+  const lock = await redlock.acquire([RES], 2000, {
+    retryCount: 2,
+    retryDelay: 200,
+    retryJitter: 0,
+  });
+
+  const log = mergedLog(nodes);
+
+  // --- 回歸斷言（一）：自我阻塞已消失 ---
+  const selfBlocked = log.acquire.filter((e) => e.selfBlocked);
+  assert.equal(
+    selfBlocked.length,
+    0,
+    `不得再被自己的 value 擋住，實際 blocker=${selfBlocked.map((e) => e.blocker)}`
+  );
+
+  // --- 回歸斷言（二）：必須真的經過「覆寫自己舊 key」的路徑 ---
+  // 少了這條，本測試在「第 2 次 attempt 根本沒碰到 node1」時也會綠燈，
+  // 就變成沒有判別力的斷言。
+  const node1 = log.acquire.filter((e) => e.node === "node1");
+  assert.ok(
+    node1.some((e) => e.granted && !e.reacquiredOwn),
+    "attempt1 在 node1 上是全新取得"
+  );
+  assert.ok(
+    node1.some((e) => e.granted && e.reacquiredOwn),
+    "attempt2 在**同一顆** node1 上覆寫了自己的舊 key（F2 修復的路徑）"
+  );
+
+  // --- 對照：別人的鎖仍然擋得住，一般競爭沒有被這個修復削弱 ---
+  const foreignBlocked = log.acquire.filter((e) => e.blocker === "FOREIGN");
+  assert.ok(foreignBlocked.length > 0, "node2/node3 曾由 FOREIGN 擋住（一般競爭）");
+  assert.ok(
+    foreignBlocked.every((e) => e.granted === false),
+    "被 FOREIGN 擋住時一律不得放行"
+  );
+
+  // --- 結果：三個節點最終都持有本次的 value ---
+  assert.equal(
+    nodes.every((n) => n.get(RES) === lock.value),
+    true,
+    "三節點都持有本次 acquire 的 value"
+  );
+
+  // NOSCRIPT fallback 路徑確實被走到（src/index.ts:574-595）
+  assert.ok(log.evalsha > 0 && log.eval > 0, "evalsha→NOSCRIPT→eval fallback 被執行");
+});
+
+// ---------------------------------------------------------------------------
+// F6【已修復】— using() 的 timer 洩漏：routine 在「續期仍在途中」時結束
 // 對應建模決策 9：F6 刻意不在 Quint 內建模（需 JS event loop），改用本測試涵蓋。
 //
-// 機制（src/index.ts:716-765）：
+// 修復前的機制：
 //   queue() 設定 timeout → extend() 一開頭把 timeout 設成 undefined → await 續期
 //   → 成功後再呼叫 queue() 設一個**新的** timeout。
 //   若 routine 在 await 期間結束，finally 的 `if (timeout) clearTimeout` 已經
 //   無事可做（timeout 是 undefined），但 finally 又 await extension，
-//   於是 queue() 在清理之後才跑，留下一個沒有人清除的 timer。
+//   於是 queue() 在清理之後才跑，留下一個沒有人清除的 timer——它會在鎖**已經
+//   釋放之後**才觸發 extend()。
+// 修復後：用 `running` 旗標讓在途的 extend() 完成後不再 queue()，並在 await
+//   extension 之後再清一次 timeout。
 //
 // 本測試**不靠時序猜測**：routine 等到「續期真的開始了」才返回，因此
 // 「返回時續期在途」是確定成立的，而非靠 sleep 碰運氣。
 // ---------------------------------------------------------------------------
-test("F6: routine 在續期途中結束 → using() 返回後仍有殘留 timer", async () => {
+test("F6（已修復）: routine 在續期途中結束 → using() 返回後不留任何 timer", async () => {
   const nodes = makeNodes(3);
   const redlock = new Redlock(nodes, {
     retryCount: 0,
@@ -191,6 +262,11 @@ test("F6: routine 在續期途中結束 → using() 返回後仍有殘留 timer"
   const duration = 300;
 
   // --- 追蹤全域 setTimeout，辨識「本次呼叫期間建立且仍然存活」的 timer ---
+  //
+  // 注意：**測試手法本身不得建立任何 setTimeout**。若用 sleep() 來製造
+  // 「續期在途」的時間窗，那個 sleep 的 timer 也會被算進殘留數——修復前的
+  // `leaked > 0` 就可能只是測到自己的 sleep，而不是 Redlock 洩漏的 timer。
+  // 因此這裡改用一道**明確的閘門**（純 Promise，不含計時器）來控制續期何時完成。
   const pending = new Set();
   const origSetTimeout = globalThis.setTimeout;
   const origClearTimeout = globalThis.clearTimeout;
@@ -213,17 +289,23 @@ test("F6: routine 在續期途中結束 → using() 返回後仍有殘留 timer"
 
   let markExtendStarted;
   const extendStarted = new Promise((r) => (markExtendStarted = r));
+  let openExtendGate;
+  const extendGate = new Promise((r) => (openExtendGate = r));
   let extendInFlightAtReturn = false;
   let extendFinished = false;
+  let extendIntercepted = 0;
 
-  // 讓 EXTEND 這條路徑變慢，並在它「已經開始」時通知 routine
+  // 讓 EXTEND 這條路徑停在閘門上，並在它「已經開始」時通知 routine。
+  // 判別式必須用 isExtendScript()：修復後的 ACQUIRE_SCRIPT 也含有 EXTEND 的
+  // 比對字串，若只比對那一段，acquire 會被誤判成續期，整個情境根本不會發生。
   for (const n of nodes) {
     const originalEval = n.eval.bind(n);
     n.eval = async (script, numKeys, args) => {
-      const isExtend = script.includes('redis.call("get", key) ~= ARGV[1]');
+      const isExtend = isExtendScript(script);
       if (isExtend) {
+        extendIntercepted += 1;
         markExtendStarted();
-        await sleep(80); // 續期在途的時間窗
+        await extendGate; // 續期在途的時間窗（不使用計時器）
         const r = await originalEval(script, numKeys, args);
         extendFinished = true;
         return r;
@@ -238,11 +320,20 @@ test("F6: routine 在續期途中結束 → using() 返回後仍有殘留 timer"
     await redlock.using([RES], duration, async () => {
       await extendStarted; // 等到自動續期真的開始
       extendInFlightAtReturn = !extendFinished; // 返回時它仍在途
+      // 讓 using() 先進入「routine 已結束、續期仍在途」的狀態，再放行續期。
+      // setImmediate 不是 setTimeout，不會被計入殘留 timer。
+      setImmediate(openExtendGate);
       return "ROUTINE_DONE";
     });
 
     const leaked = [...pending].filter((h) => !baseline.has(h));
 
+    // 先決條件：本測試真的落在 F6 的情境裡。三條缺一不可，否則
+    // 「沒有殘留 timer」會在**從未發生續期**的情況下也成立（假綠燈）。
+    assert.ok(
+      extendIntercepted > 0,
+      "先決條件：自動續期確實被觸發（若為 0，代表判別式誤判或時序沒對上）"
+    );
     assert.equal(
       extendInFlightAtReturn,
       true,
@@ -253,10 +344,12 @@ test("F6: routine 在續期途中結束 → using() 返回後仍有殘留 timer"
       true,
       "鎖已在所有節點上釋放"
     );
-    assert.ok(
-      leaked.length > 0,
-      `using() 返回後仍有 ${leaked.length} 個殘留 timer（洩漏）——` +
-        `它們會在鎖已釋放之後才觸發 extend()`
+
+    // 回歸斷言：修復前這裡會留下 1 個沒人清除的 timer
+    assert.equal(
+      leaked.length,
+      0,
+      `using() 返回後不得留下任何 timer，實際殘留 ${leaked.length} 個`
     );
   } finally {
     globalThis.setTimeout = origSetTimeout;

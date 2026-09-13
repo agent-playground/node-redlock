@@ -1,6 +1,7 @@
 import test from "ava";
 import type { Redis as Client } from "ioredis";
-import Redlock, { ExecutionError } from "./index.js";
+import Redlock, { ExecutionError, Lock } from "./index.js";
+import type { RedlockAbortSignal, Settings } from "./index.js";
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -10,11 +11,39 @@ interface KeyEntry {
   expiresAt: number;
 }
 
+// --- script 判別式 ---
+//
+// 陷阱：修復後的 ACQUIRE_SCRIPT **也含有** `redis.call("get", key) ~= ARGV[1]`
+// （它現在要比對「擋住我的 key 是不是我自己的」）。任何只用該字串辨識 EXTEND
+// 的攔截器，都會把 ACQUIRE 誤判成續期，讓測試在**從未發生續期**的情況下綠燈。
+// 只有 `redis.call("exists"` 是 ACQUIRE 獨有的，而且修復前後都存在——後者讓
+// 同一份 mock 對兩個版本都適用，紅綠對照才有意義。
+const ACQUIRE_MARKER = 'redis.call("exists"';
+const EXTEND_MARKER = 'redis.call("get", key) ~= ARGV[1]';
+const RELEASE_MARKER = 'redis.pcall("del"';
+
+const isAcquireScript = (script: string): boolean =>
+  script.includes(ACQUIRE_MARKER);
+const isExtendScript = (script: string): boolean =>
+  script.includes(EXTEND_MARKER) && !script.includes(ACQUIRE_MARKER);
+const isReleaseScript = (script: string): boolean =>
+  script.includes(RELEASE_MARKER);
+
+interface AcquireObservation {
+  granted: boolean;
+  blocker: string | null;
+  /** The key that blocked us carried our *own* value (the F2 defect). */
+  selfBlocked: boolean;
+  /** We were granted while one of the keys already held our own value. */
+  reacquiredOwn: boolean;
+}
+
 class MockRedisClient {
   public store = new Map<string, KeyEntry>();
   public delayMs = 0;
   public failExtend = false;
   public failRelease = false;
+  public acquireLog: AcquireObservation[] = [];
 
   private _entry(key: string): KeyEntry | undefined {
     const e = this.store.get(key);
@@ -51,30 +80,45 @@ class MockRedisClient {
     const keys = args.slice(0, numKeys).map(String);
     const argv = args.slice(numKeys).map(String);
 
-    if (
-      script.includes("ACQUIRE_SCRIPT") ||
-      script.includes("Create or update the entry")
-    ) {
+    if (isAcquireScript(script)) {
       const lockValue = argv[0];
       const ttl = Number(argv[1]);
 
+      // 擋鎖條件由 script 原文決定：修復前只看 exists（同 value 也擋，
+      // 即自我阻塞）；修復後只有 value 不同才擋。寫死其中一種，就等於讓
+      // mock 只對某一版 src 忠實，紅綠對照會失去意義。
+      const valueAware = script.includes(EXTEND_MARKER);
+      let reacquiredOwn = false;
+
       for (const key of keys) {
         const e = this._entry(key);
-        if (e && e.value !== lockValue) {
-          return 0;
+        if (!e) continue;
+        if (valueAware && e.value === lockValue) {
+          reacquiredOwn = true;
+          continue;
         }
+        this.acquireLog.push({
+          granted: false,
+          blocker: e.value,
+          selfBlocked: e.value === lockValue,
+          reacquiredOwn: false,
+        });
+        return 0;
       }
 
       for (const key of keys) {
         this.set(key, lockValue, ttl);
       }
+      this.acquireLog.push({
+        granted: true,
+        blocker: null,
+        selfBlocked: false,
+        reacquiredOwn,
+      });
       return keys.length;
     }
 
-    if (
-      script.includes("EXTEND_SCRIPT") ||
-      script.includes('redis.call("get", key) ~= ARGV[1]')
-    ) {
+    if (isExtendScript(script)) {
       if (this.failExtend) {
         return 0;
       }
@@ -94,10 +138,7 @@ class MockRedisClient {
       return keys.length;
     }
 
-    if (
-      script.includes("RELEASE_SCRIPT") ||
-      script.includes("Only remove entries for *this* lock value")
-    ) {
+    if (isReleaseScript(script)) {
       if (this.failRelease) {
         return 0;
       }
@@ -197,6 +238,24 @@ test("F2 fix: retry is NOT blocked by keys left by the client's own previous att
   t.is(clients[0].get("retry-resource"), lock.value);
   t.is(clients[1].get("retry-resource"), lock.value);
   t.is(clients[2].get("retry-resource"), lock.value);
+
+  // The assertions above are NOT enough on their own: quorum here is 2 of 3, so
+  // even while client 0 was self-blocked the acquisition still succeeded via
+  // clients 1 and 2 — and client 0 still held the same value, left over from
+  // attempt 1. The defect is only observable on client 0's own votes.
+  const log = clients[0].acquireLog;
+  t.false(
+    log.some((e) => e.selfBlocked),
+    "Client 0 was never blocked by its own value"
+  );
+  t.true(
+    log.some((e) => e.granted && !e.reacquiredOwn),
+    "Attempt 1 was a fresh acquisition on client 0"
+  );
+  t.true(
+    log.some((e) => e.granted && e.reacquiredOwn),
+    "Attempt 2 re-acquired client 0 over its own leftover key (the fixed path)"
+  );
 });
 
 test.serial(
@@ -213,17 +272,28 @@ test.serial(
     const duration = 200;
     let extendStartedResolve: () => void;
     const extendStarted = new Promise<void>((r) => (extendStartedResolve = r));
+    let openExtendGate: () => void;
+    const extendGate = new Promise<void>((r) => (openExtendGate = r));
+    let extendIntercepted = 0;
+    let extendFinished = false;
+    let extendInFlightAtReturn = false;
 
-    // Delay extend slightly so routine can return while extend is in flight
+    // Hold the extension at an explicit gate so the routine can return while the
+    // extension is genuinely in flight.
+    //
+    // The gate is a bare Promise on purpose: a sleep() here would create a
+    // setTimeout of its own, and this test counts lingering timers — the
+    // harness must not contribute any.
     for (const c of clients) {
       const origEval = c.eval.bind(c);
       c.eval = async (script, numKeys, args) => {
-        if (
-          script.includes("EXTEND_SCRIPT") ||
-          script.includes('redis.call("get", key) ~= ARGV[1]')
-        ) {
+        if (isExtendScript(script)) {
+          extendIntercepted++;
           extendStartedResolve();
-          await sleep(60);
+          await extendGate;
+          const result = await origEval(script, numKeys, args);
+          extendFinished = true;
+          return result;
         }
         return origEval(script, numKeys, args);
       };
@@ -260,14 +330,24 @@ test.serial(
         duration,
         async () => {
           await extendStarted;
+          extendInFlightAtReturn = !extendFinished;
+          // Let using() reach the "routine done, extension still in flight"
+          // state before the extension is allowed to complete. setImmediate is
+          // not a setTimeout, so it is not counted as a lingering timer.
+          setImmediate(openExtendGate);
           return "ROUTINE_DONE";
         }
       );
 
       t.is(result, "ROUTINE_DONE");
 
-      // Give microtasks and in-flight handlers a moment to settle
-      await sleep(80);
+      // Preconditions: without these, "no lingering timers" would also hold in
+      // the case where no extension ever ran — a vacuous pass.
+      t.true(extendIntercepted > 0, "An automatic extension actually ran");
+      t.true(
+        extendInFlightAtReturn,
+        "The routine returned while the extension was still in flight"
+      );
 
       const leaked = [...activeTimers].filter((h) => !baseline.has(h));
       t.is(leaked.length, 0, "No lingering timers after using() completes");
@@ -319,9 +399,11 @@ test("F7 fix: using() propagates signal.error when abort occurs rather than rele
   });
 
   // Lock duration 160ms, extension fails -> abort signal triggered
-  await t.throwsAsync(
+  let captured: RedlockAbortSignal | undefined;
+  const error = await t.throwsAsync(
     async () => {
       await redlock.using(["abort-resource"], 160, async (signal) => {
+        captured = signal;
         await sleep(250); // wait for extension to fail and lock to expire
         t.true(signal.aborted, "Signal aborted");
         return "ROUTINE_FINISH";
@@ -333,24 +415,112 @@ test("F7 fix: using() propagates signal.error when abort occurs rather than rele
         /The operation was unable to achieve a quorum during its retry window\./,
     }
   );
+
+  // The message alone proves nothing: before the fix, the error thrown from the
+  // `finally` block (the failing release) carried exactly the same message. The
+  // discriminating assertion is *identity* — the thrown error must be the very
+  // object recorded on the signal, not a look-alike from the release path.
+  t.truthy(captured?.error, "signal.error was set when the lock was lost");
+  t.is(
+    error,
+    captured?.error,
+    "using() rethrows signal.error itself, not the release error"
+  );
 });
 
-test("settings pass-through: using() passes per-call settings to extend", async (t) => {
+// Counting eval calls cannot measure retryCount inside `using()`: when an
+// extension fails, `using()` re-invokes extend() recursively for as long as the
+// lock is still valid (src/index.ts, the `running && lock.expiration > Date.now()`
+// branch). With retryDelay 0 that is a tight microtask loop — measured at 4149
+// eval calls in ~50ms. So the two properties are asserted separately, each in a
+// deterministic way.
+
+test.serial(
+  "settings pass-through: using() forwards its per-call settings to lock.extend",
+  async (t) => {
+    const clients = makeClients(3);
+    const redlock = new Redlock(clients as unknown as Client[], {
+      retryCount: 5,
+      retryDelay: 200,
+    });
+
+    const perCall: Partial<Settings> = {
+      retryCount: 0,
+      retryDelay: 0,
+      retryJitter: 0,
+      automaticExtensionThreshold: 50,
+    };
+
+    // Capture the second argument `using()` hands to Lock#extend. This is the
+    // property under test, observed directly rather than inferred from counts.
+    const captured: (Partial<Settings> | undefined)[] = [];
+    const originalExtend = Lock.prototype.extend;
+    Lock.prototype.extend = function (
+      this: Lock,
+      duration: number,
+      settings?: Partial<Settings>
+    ): Promise<Lock> {
+      captured.push(settings);
+      return originalExtend.call(this, duration, settings);
+    };
+
+    try {
+      // Extension succeeds here: no failure loop, exactly one extension.
+      const result = await redlock.using(
+        ["settings-resource"],
+        200,
+        perCall,
+        async () => {
+          await sleep(250);
+          return "DONE";
+        }
+      );
+      t.is(result, "DONE");
+    } finally {
+      Lock.prototype.extend = originalExtend;
+    }
+
+    // Precondition: an automatic extension actually happened.
+    t.true(captured.length > 0, "Lock#extend was actually called");
+
+    // Before the fix, `using()` called `lock.extend(duration)` with no second
+    // argument, so every captured value was undefined.
+    t.not(captured[0], undefined, "extend received a settings argument");
+
+    // `using()` merges the per-call settings over the instance settings, so the
+    // captured object is the full merged set (it also carries driftFactor etc.).
+    // What matters is that the per-call overrides won.
+    t.like(
+      captured[0],
+      perCall,
+      "using() forwards its per-call settings to extend"
+    );
+    t.is(
+      captured[0]?.retryCount,
+      0,
+      "retryCount is the per-call 0, not the instance's 5"
+    );
+  }
+);
+
+test("settings pass-through: lock.extend honours the retryCount it is given", async (t) => {
   const clients = makeClients(3);
-  // Redlock configured with retryCount 5
+  // Instance is configured with retryCount 5 -> 6 attempts per client if the
+  // per-call settings are ignored.
   const redlock = new Redlock(clients as unknown as Client[], {
     retryCount: 5,
-    retryDelay: 200,
+    retryDelay: 0,
+    retryJitter: 0,
   });
 
+  const lock = await redlock.acquire(["retrycount-resource"], 10_000);
+
+  // Only now start failing extensions, so acquisition is unaffected.
   let extendAttemptsCount = 0;
   for (const c of clients) {
     const origEval = c.eval.bind(c);
     c.eval = async (script, numKeys, args) => {
-      if (
-        script.includes("EXTEND_SCRIPT") ||
-        script.includes('redis.call("get", key) ~= ARGV[1]')
-      ) {
+      if (isExtendScript(script)) {
         extendAttemptsCount++;
         return 0; // force failure
       }
@@ -358,32 +528,22 @@ test("settings pass-through: using() passes per-call settings to extend", async 
     };
   }
 
-  const duration = 200;
-  // using() with retryCount: 0
+  // Called directly, so there is no `using()` retry loop in play: the attempt
+  // count is exactly (retryCount + 1) * clients.
   await t.throwsAsync(
     async () => {
-      await redlock.using(
-        ["settings-resource"],
-        duration,
-        {
-          retryCount: 0,
-          retryDelay: 0,
-          retryJitter: 0,
-          automaticExtensionThreshold: 50,
-        },
-        async () => {
-          await sleep(250);
-        }
-      );
+      await lock.extend(10_000, {
+        retryCount: 0,
+        retryDelay: 0,
+        retryJitter: 0,
+      });
     },
-    { instanceOf: Error }
+    { instanceOf: ExecutionError }
   );
 
-  // If settings were not passed, retryCount 5 would try 6 times across 3 nodes = 18 attempts.
-  // With retryCount: 0 passed, it tries exactly 1 attempt across 3 nodes = 3 attempts.
   t.is(
     extendAttemptsCount,
     3,
-    "Only 1 attempt was made on each client due to retryCount: 0"
+    "retryCount: 0 means exactly 1 attempt on each of the 3 clients"
   );
 });
