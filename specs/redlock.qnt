@@ -93,8 +93,11 @@ module redlock {
     signalAbort: bool,
     // 是否曾出現「被自己上一輪留下的 key 擋住」（F2 的觀測點，只增不減）。
     selfBlocked: bool,
-    // acquire/extend 結算時就「已經過期」的觀測點（F1 / F5 的精確位置）。
+    // acquire/extend 結算時就「已經過期」的觀測點。
+    // 拆成兩個來源，才能分別證明 F1（acquire）與 F5（extend）各自可違反。
     returnedExpired: bool,
+    expiredViaAcquire: bool,
+    expiredViaExtend: bool,
     // --- using() 的延伸狀態 ---
     extendPhase: ExtendPhase,
     extendStart: int,
@@ -212,6 +215,12 @@ module redlock {
   pure def criticalCount(s: State): int =
     CLIENTS.fold(0, (acc, c) => acc + (if (isCritical(s, c)) 1 else 0))
 
+  // F8（Kleppmann）：同時**相信自己**持有鎖的 client 數。
+  // 這與 trulyHolds 的差別就是整份規格的主題——使用者在乎的是有幾個 client
+  // 自認可以進臨界區，而不是 Redis 上實際有幾把鎖。
+  pure def believerCount(s: State): int =
+    CLIENTS.fold(0, (acc, c) => acc + (if (believesHolds(s, c)) 1 else 0))
+
   pure def isSilentlyUnderQuorum(s: State, c: ClientId): bool =
     believesHolds(s, c) and permitsOf(s, c).size() < quorumSize
 
@@ -321,6 +330,8 @@ module redlock {
       signalAbort: false,
       selfBlocked: false,
       returnedExpired: false,
+      expiredViaAcquire: false,
+      expiredViaExtend: false,
       extendPhase: EXTEND_IDLE,
       extendStart: 0,
       extendDone: false,
@@ -444,6 +455,9 @@ module redlock {
         permits: clients.get(c).grantedNodes,
       },
       // 正確的實作會在此拒絕並解鎖；as-is 直接回傳（src/index.ts:323-329）。
+      // F1：來源是 acquire 結算。
+      expiredViaAcquire: clients.get(c).expiredViaAcquire or
+        acquireBelieved(clients.get(c)) <= now,
       returnedExpired: clients.get(c).returnedExpired or
         acquireBelieved(clients.get(c)) <= now,
     }),
@@ -578,6 +592,9 @@ module redlock {
         expiresAt: extendBelieved(clients.get(c)),
         permits: clients.get(c).lock.permits.union(clients.get(c).extendGranted),
       },
+      // F5：來源是 extend 結算（replacement Lock 同樣缺 validity 檢查）。
+      expiredViaExtend: clients.get(c).expiredViaExtend or
+        extendBelieved(clients.get(c)) <= now,
       returnedExpired: clients.get(c).returnedExpired or
         extendBelieved(clients.get(c)) <= now,
     }),
@@ -718,6 +735,22 @@ module redlock {
   val INV_VIOLATED_quorumCoverageDecay: bool =
     val s = mkState(now, nodes, clients)
     CLIENTS.forall(c => not(isSilentlyUnderQuorum(s, c)))
+
+  // **F1 專屬**：來源限縮在 acquire 結算，證明「回傳已過期的鎖」不需靠 extend 路徑。
+  val INV_VIOLATED_acquireReturnsExpiredLock: bool =
+    CLIENTS.forall(c => not(clients.get(c).expiredViaAcquire))
+
+  // **F5 專屬**：來源限縮在 extend 結算（replacement Lock）。
+  // 這條與 F1 分開，才能回答「extend() 的 check-then-act 是否獨立成立」。
+  val INV_VIOLATED_extendReturnsExpiredLock: bool =
+    CLIENTS.forall(c => not(clients.get(c).expiredViaExtend))
+
+  // **F8（Kleppmann）**：不存在兩個 client **同時相信自己持有鎖**。
+  // 節點崩潰重啟遺失未同步的 key 後，另一個 client 可以取得 quorum，
+  // 而前者仍在自己相信的有效期內——這是最經典的「同時兩人自認持鎖」。
+  // 注意：此條在 ENABLE_CRASH_LOSS=false 的預設情境下不應被違反。
+  val INV_VIOLATED_twoClientsBelieveLock: bool =
+    believerCount(mkState(now, nodes, clients)) <= 1
 
   // **F4 —— 承載安全性結論的那一條。**
   // 不存在兩個 client 同時在臨界區。這才是使用者在乎的事：

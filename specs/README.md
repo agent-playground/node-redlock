@@ -64,7 +64,11 @@ $ npx quint test specs/redlockTest.qnt --main=redlockF2Scenario
 | `INV_VIOLATED_returnsExpiredLock` | `redlockDefault` | 5 | **12 s** | 必須找到反例 | ✅ 反例 + ITF |
 | `INV_VIOLATED_quorumCoverageDecay` | `redlockCrashLoss` | 5 | **10 s** | 必須找到反例 | ✅ 反例 + ITF |
 | `INV_VIOLATED_releaseErrorMasksAbort` | `redlockDefault` | 10 | **95 s** | 必須找到反例 | ✅ 反例 + ITF |
-| `INV_VIOLATED_concurrentCriticalSections` | `redlockDefault` | 12 | **676 s** | 必須找到反例 | ✅ 反例 + ITF |
+| `INV_VIOLATED_concurrentCriticalSections` | `redlockDefault` | 12 | **676 s**（重測 944 s） | 必須找到反例 | ✅ 反例 + ITF |
+| `INV_VIOLATED_acquireReturnsExpiredLock`（F1 專屬） | `redlockDefault` | 6 | **12 s** | 必須找到反例 | ✅ 反例 + ITF |
+| `INV_VIOLATED_extendReturnsExpiredLock`（F5 專屬） | `redlockDefault` | 8 | **25 s** | 必須找到反例 | ✅ 反例 + ITF |
+| `INV_VIOLATED_twoClientsBelieveLock`（F8 專屬） | `redlockCrashLoss` | 8 | **26 s** | 必須找到反例 | ✅ 反例 + ITF |
+| `INV_VIOLATED_twoClientsBelieveLock`（陰性對照） | `redlockDefault` | 8 | — | **不得**有反例 | ✅ 無反例 |
 
 ```console
 # 真不變式：必須「無違反」、退出碼 0
@@ -137,7 +141,10 @@ CI 的百分比斷言只保留 `selfBlockedByOwnValue`。
 | 名稱 | 類型 | 意義 |
 |---|---|---|
 | `mutualExclusionOnNodes` | 真不變式 | 不存在兩個 client 同時 `trulyHolds`（至少 quorum 個節點上 key 值相符且未到期）。 |
-| `INV_VIOLATED_returnsExpiredLock` | **預期違反** | `acquire()` / `extend()` 結算時算出的 `expiration` 已經成為過去，而程式碼沒有任何檢查就回傳（F1 / F5）。 |
+| `INV_VIOLATED_returnsExpiredLock` | **預期違反** | `acquire()` / `extend()` 結算時算出的 `expiration` 已經成為過去，而程式碼沒有任何檢查就回傳（F1 ∪ F5）。 |
+| `INV_VIOLATED_acquireReturnsExpiredLock` | **預期違反** | **F1 專屬**：來源限縮在 `completeAcquire`，證明 F1 不需靠 extend 路徑即可成立。 |
+| `INV_VIOLATED_extendReturnsExpiredLock` | **預期違反** | **F5 專屬**：來源限縮在 `completeExtend`（replacement Lock），證明 F5 可獨立於 F1 成立。 |
+| `INV_VIOLATED_twoClientsBelieveLock` | **預期違反**（僅 F8 開啟時） | **F8 專屬（Kleppmann）**：不存在兩個 client **同時相信自己持有鎖**。預設情境下**不應**被違反，是 F8 的陰性對照。 |
 | `INV_VIOLATED_quorumCoverageDecay` | **預期違反** | client 相信持有有效鎖，但真實覆蓋率已跌破 quorum（F3）。 |
 | `INV_VIOLATED_concurrentCriticalSections` | **預期違反** | 兩個 client 同時在臨界區（F4）。**這是承載安全性結論的那一條。** |
 | `INV_VIOLATED_releaseErrorMasksAbort` | **預期違反** | release 失敗吃掉了已發生的 abort 錯誤（F7）。 |
@@ -169,6 +176,51 @@ client 相信的到期時間是 `start + DURATION - DRIFT`，而節點端 key �
 開關存在的理由。
 
 ---
+
+## F1–F9 逐條反例結論
+
+| 發現 | 反例？ | 證據 | 備註 |
+|---|---|---|---|
+| **F1** `acquire()` 缺 validity 檢查 | ✅ | `INV_VIOLATED_acquireReturnsExpiredLock`，6 步 / 12 s，ITF 5 states | 專屬不變式，不依賴 extend |
+| **F2** `exists` 自我阻塞 | ⚠️ **非反例，是 witness** | `selfBlockedByOwnValue` 1.19%；`redlockF2Scenario::bothClientsStarveTest` 決定性腳本 | 存活性缺陷**沒有**不變式可違反——它是「該能發生的事沒發生」，只能以可達性證明 |
+| **F3** extend 不修復少數節點 | ✅ | `INV_VIOLATED_quorumCoverageDecay`，5 步 / 10 s，ITF 5 states | **需 `ENABLE_CRASH_LOSS=true`**；預設情境下已證明不可違反（反例需非對稱節點失效） |
+| **F4** 臨界區重疊 | ✅ | `INV_VIOLATED_concurrentCriticalSections`，12 步 / 676 s，ITF 13 states | 承載安全性結論的那一條；反例恰好等於 `max-steps` 上限 |
+| **F5** `extend()` check-then-act | ✅ | `INV_VIOLATED_extendReturnsExpiredLock`，8 步 / 25 s，ITF 8 states | 專屬不變式，**可獨立於 F1 成立** |
+| **F6** timer 洩漏 | ❌ | — | 依建模決策 9 **刻意排除**於 Quint 之外（需 JS event loop）。見「刻意未涵蓋」的 ava 替代建議 |
+| **F7** release 失敗遮蔽錯誤 | ✅ | `INV_VIOLATED_releaseErrorMasksAbort`，10 步 / 190 s，ITF 10 states | — |
+| **F8** 節點崩潰遺失 key（Kleppmann） | ✅ | `INV_VIOLATED_twoClientsBelieveLock`，8 步 / 26 s，ITF 8 states | **需 `ENABLE_CRASH_LOSS=true`**；預設情境無反例（陰性對照通過） |
+| **F9** 時鐘跳躍 | ❌ **模型無法證否** | — | **見下方「F9 的建模缺陷」** |
+
+計數：**6 條有反例**（F1、F3、F4、F5、F7、F8）、**1 條以 witness 呈現**（F2）、
+**1 條刻意排除**（F6）、**1 條模型表達不出來**（F9）。
+
+## F9 的建模缺陷（實測後確認，尚未修正）
+
+`ENABLE_CLOCK_JUMP` 這個開關**實際上是空的**：它開與不開，可達狀態集完全相同。
+
+理由（構造性證明，不需實測）：`jumpClock` 設 `now' = now + 1 + STALL_BOUND`，
+而 `advanceTime` 把 `now` 加 1 且**沒有 guard、恆可使用**。因此
+「一次 `jumpClock`」永遠可以被「`1 + STALL_BOUND` 次 `advanceTime`」逐步模擬，
+也就是 clockJump 實例的可達狀態集是 default 的**子集**——它不可能產生 default
+產生不了的反例。實測也印證：`redlockClockJump` 下會違反的不變式
+（如 `INV_VIOLATED_returnsExpiredLock`）在 default 下同樣會違反。
+
+**根因不是實作，是建模決策 5**：「全域單一 `now` ＋ 每節點到期 ＋ 每 client 相信的
+到期」把 client 時鐘與 Redis 伺服器時鐘**合而為一**。但 F9 的定義恰恰是
+「`Date.now()` 被 NTP 跳躍」——**客戶端的牆鐘跳了，Redis 的 TTL 沒有跳**。
+單一時鐘表達不出這個差異。
+
+**修正方式（需人類裁定是否納入）**：把 `now` 拆成兩個時鐘——
+
+```
+var clientNow: int   // 對應 Date.now()；believesHolds / acquireBelieved 用它
+var nodeNow:   int   // Redis 伺服器時鐘；SET ... PX 的到期與 keyExists 用它
+```
+
+`advanceTime` 同時推進兩者；`jumpClock` **只推進 `clientNow`**。
+如此，一次向前跳躍會讓 client 相信鎖已過期（或相信自己還有很久）
+而節點上的 key 仍在——F9 才可證否。這會改變建模決策 5，屬於需求方的裁定範圍，
+因此本規格**保留現狀並在此明確標示**，不自行變更。
 
 ## 規模與界（REQ-11 / REQ-12）
 
