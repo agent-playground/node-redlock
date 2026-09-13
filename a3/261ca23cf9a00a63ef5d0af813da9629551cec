@@ -1,0 +1,30 @@
+specs/traces/INV_VIOLATED_quorumCoverageDecay.itf.json
+  h_1b119f25eaf333 1
+.gitignore
+  h_1b119f25eaf333 19-21
+specs/traces/INV_VIOLATED_concurrentCriticalSections.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_returnsExpiredLock.itf.json
+  h_1b119f25eaf333 1
+specs/README.md
+  h_1b119f25eaf333 1-44,56-448
+  h_1b119f25eaf333 45-55
+specs/redlockTest.qnt
+  h_1b119f25eaf333 1-215
+  h_1b119f25eaf333 216-221
+specs/redlock.qnt
+  h_1b119f25eaf333 1-756
+package.json
+  h_1b119f25eaf333 49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a3261ca23cf9a00a63ef5d0af813da9629551cec",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
