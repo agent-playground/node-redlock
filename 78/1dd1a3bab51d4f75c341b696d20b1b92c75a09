@@ -1,0 +1,16 @@
+specs/traces/INV_VIOLATED_concurrentCriticalSections.itf.json
+  h_1b119f25eaf333 1
+specs/traces/INV_VIOLATED_releaseErrorMasksAbort.itf.json
+  h_1b119f25eaf333 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "781dd1a3bab51d4f75c341b696d20b1b92c75a09",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
