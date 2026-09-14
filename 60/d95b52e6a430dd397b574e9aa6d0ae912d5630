@@ -1,0 +1,24 @@
+quint.mmd
+  h_1b119f25eaf333 1-11
+specs/README.md
+  h_1b119f25eaf333 19-26,187-198,288,291-292,430,458,460-494
+specs/uppaal/README.md
+  h_1b119f25eaf333 1-273
+specs/uppaal/redlock_f9.q
+  h_1b119f25eaf333 1-76
+specs/uppaal/redlock_f9.xml
+  h_1b119f25eaf333 1-363
+specs/uppaal/verify.sh
+  h_1b119f25eaf333 1-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "60d95b52e6a430dd397b574e9aa6d0ae912d5630",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
