@@ -50,7 +50,22 @@ E<> (Client0.InCritical && Client1.InCritical && client_jumps == 0)
 
 /*
  * 查詢 4【整體互斥性】——在允許時鐘突跳的環境下，互斥性不成立。
- * 預期：NOT satisfied（UPPAAL 會產出診斷反例軌跡）
+ *
+ * ⚠️ 這條是**門面，不是證據**，兩個理由：
+ *
+ *   (a) 邏輯上多餘：查詢 2 為 satisfied 就已經蘊含本條為 NOT satisfied
+ *       （`A[] not P` 與 `E<> P` 對偶）。留著它只因為這是大家認得的
+ *       那條安全性質的標準寫法。
+ *
+ *   (b) **它不告訴你是哪一種時鐘壞的**：本條沒有任何 jumps 限制，
+ *       UPPAAL 只會回報「最短」的那條反例。目前它剛好是 F9 那條
+ *       （node_jumps == 0），但那是搜尋順序的巧合——只要 F8 那條路徑
+ *       變短，這裡就會改給你節點時鐘的軌跡，讀的人很容易誤判成 F9。
+ *       本模型的前一版正是這樣把 F8 當成 F9 在證。
+ *
+ * 判讀 F9 請看查詢 2（帶 node_jumps == 0），並且必須與查詢 1 配對。
+ *
+ * 預期：NOT satisfied
  */
 A[] not (Client0.InCritical && Client1.InCritical)
 
