@@ -580,16 +580,46 @@ as-fixed 全部跑完：`123 + 218 + 735 + 108 + 274 + 222 + 14 + 33 + 1620`
 > 證明必須窮盡到深度 N（F7：125 s → 735 s）；
 > （2）F4 這個搜尋因為狀態空間變大而變深（784 s → 1620 s）。
 
-**建議（給人類的決策點）**——CI 若要維持 45 分鐘或更短，可考慮：
+**成本集中在單一案例**（同一輪實測，依耗時排序）：
 
-- **（a）把 `abortReasonNeverMasked` 從 `--max-steps 10` 降到 8**
-  （735 s → 約 200–250 s，省約 8–9 分鐘），
-  並以**決定性 `run` 測試** `abortReasonSurvivesReleaseFailureTest` 覆蓋更深的路徑
+| 案例                               | 實例    | 步  | 牆鐘       | 佔比  | 累計  |
+| ---------------------------------- | ------- | --- | ---------- | ----- | ----- |
+| F4 `concurrentCriticalSections`    | default | 12  | **1620 s** | 48.4% | 48%   |
+| F7 `abortReasonNeverMasked`        | default | 10  | **735 s**  | 22.0% | 70%   |
+| `mutualExclusionOnNodes`（sanity） | default | 8   | 274 s      | 8.2%  | 79%   |
+| 陰性對照 `twoClientsBelieveLock`   | default | 8   | 222 s      | 6.6%  | 85%   |
+| F2 `neverSelfBlocked`              | default | 8   | 218 s      | 6.5%  | 92%   |
+| F1∪F5 `neverHandsOutExpiredLock`   | default | 8   | 123 s      | 3.7%  | 95%   |
+| F1∪F5（敵意環境）                  | crash   | 8   | 108 s      | 3.2%  | 99%   |
+| F8 `twoClientsBelieveLock`         | crash   | 8   | 33 s       | 1.0%  | 99.6% |
+| F3 `quorumCoverageDecay`           | crash   | 5   | 14 s       | 0.4%  | 100%  |
+
+**F4 一條就佔 48%，前二大佔 70%，其餘六條加起來只有 12 分鐘。**
+
+**`abortReasonNeverMasked` 的深度必須 ≥ 9（實測，勿擅自降到 8）**：
+
+| `--max-steps` | 牆鐘      | 抓得到保真度缺陷那類回歸嗎         |
+| ------------- | --------- | ---------------------------------- |
+| 8             | **109 s** | ❌ **抓不到**——該反例在第 **9** 步 |
+| 9             | **307 s** | ✅ 抓得到，且比 `@10` 省 **428 s** |
+| 10            | **735 s** | ✅（目前設定）                     |
+
+依據：`traces/as-is/INV_VIOLATED_releaseErrorMasksAbort.itf.json` 有 **10 個狀態
+= 9 步**，違反發生在最後一個狀態。**`@8` 會漏掉本輪真正抓到的那個 bug 類別。**
+所以下面的選項 (a) 是 **9 而非 8**。
+
+**建議（給人類的決策點）**——CI 若要壓回 45 分鐘，可考慮：
+
+- **（a）把 `abortReasonNeverMasked` 從 `--max-steps 10` 降到 9**
+  （**735 s → 307 s**，省 7.1 分鐘）。**不可降到 8**（見上表）。
+  更深的路徑另由**決定性 `run` 測試** `abortReasonSurvivesReleaseFailureTest` 覆蓋
   ——它可重現、可斷言中間狀態，比隨機深度掃描更直接；
 - **（b）F4 改用 `--max-steps 12` 但接受它是長尾**（27 分鐘），
   或降到 11 並記錄「已知反例恰在 12 步」；
 - **（c）`mutualExclusionOnNodes` 與陰性對照只留一個**（兩者都是結構性論證的 sanity check，
-  各 274 s / 222 s，省約 8 分鐘）；
+  各 274 s / 222 s，省約 4–5 分鐘）；
+  **兩案合併算術**：(a) ＋ (c) ⇒ `3347 − 428 − 222 = 2697 s ≈ 45 分鐘`，
+  剛好貼在 45 分鐘線上，沒有餘裕——建議再搭配 (d)；
 - **（d）把九條案例平行化**：本機是 8 核心 / 16 GB，而目前是**逐條序列執行**
   （等於只用 1 核心）。Apalache 的 SMT 查詢是單執行緒的，理論上平行 4 條
   可拿到接近 4 倍的牆鐘改善。代價是記憶體（每個 JVM + Z3 約 1–4 GB）與
