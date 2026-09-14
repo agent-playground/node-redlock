@@ -1,12 +1,32 @@
-// specs/redlock.qnt — node-redlock (src/index.ts) 的 as-is Quint 可執行規格。
+// specs/redlock.qnt — node-redlock (src/index.ts) 的 **as-fixed** Quint 可執行規格。
 //
-// 定位：**as-is**，忠實描述現況（含缺陷），不描述「正確的 Redlock 應該如何」。
-// 因此：預期會被違反的不變式一律以 `INV_VIOLATED_` 開頭，使 quint 輸出自我說明。
+// 定位：**as-fixed**，忠實描述**修復後**的 src/index.ts（F1/F5/F2/F6/F7 已修）。
+// 修復前的 as-is 版本見 git 歷史（`git show 691c0e3:specs/redlock.qnt`），
+// 其反例軌跡保留在 specs/traces/ 作為歷史證據。
+//
+// 命名契約仍然成立：預期**會**被違反的不變式以 `INV_VIOLATED_` 開頭。
+// 修復後轉為成立的那幾條**已改名去掉前綴**，讓 quint 的輸出自我說明。
+//
+// ---------------------------------------------------------------------------
+// 反空跑契約（as-fixed 版本最重要的一件事）
+//
+// 「不變式成立」有兩種可能：(a) 實作真的正確；(b) 模型根本到不了危險狀態。
+// 後者是假綠燈。因此每一條**因修復而成立**的不變式，都必須配一個
+// **witness 證明它守的那個危險狀態確實可達**：
+//
+//   acquireNeverReturnsExpiredLock  ⟵ witness acquireExpiryDetectable
+//   extendNeverReturnsExpiredLock   ⟵ witness extendExpiryDetectable
+//   neverSelfBlocked                ⟵ witness retryFacesOwnResidualKey
+//   abortReasonNeverMasked          ⟵ witness releaseFailedWhileAborted
+//
+// 缺了 witness，那幾條不變式就只是「模型沒走到那裡」的同義反覆。
+// ---------------------------------------------------------------------------
 //
 // 對應的 9 項疑點（F1–F9）與驗證結果見 specs/README.md。
 //
 // 建模決策（不得自行變更，見 .factory/work-item-quint-spec.md）：
-//   1. as-is          2. INV_VIOLATED_ 命名契約   3. 純 Quint，不用 Choreo
+//   1. as-fixed（本次由 as-is 轉換）            2. INV_VIOLATED_ 命名契約
+//   3. 純 Quint，不用 Choreo
 //   4. 邊界含 using()  5. 三層時間               6. F8/F9 為預設 false 的開關
 //   7. truly/believes 雙判準                     8. routine 三態
 //   9. F6 排除於 Quint 之外                      10. 規模上限 N=3/M=2/K=1
@@ -62,10 +82,25 @@ module redlock {
 
   type ExtendPhase = | EXTEND_IDLE | AWAIT_EXTEND
 
-  // as-is 的 acquire 結算**沒有** validity <= 0 檢查（src/index.ts:318-329）。
-  // 正確的 Redlock 會在此加上 `and start + DURATION - DRIFT > now`。
-  // 這個型別存在只是為了讓「缺少的檢查」在規格中具名可見。
-  type AcquireKind = | NO_VALIDITY_CHECK
+  // 修復後的 acquire 結算**有** validity 檢查：
+  // `if (Date.now() >= start + duration - drift) throw ExecutionError`（src/index.ts）。
+  // 這個型別讓「檢查存在」在規格中具名可見（as-is 版本此處是 NO_VALIDITY_CHECK）。
+  type AcquireKind = | VALIDITY_CHECKED
+
+  // using() 最終向呼叫端回報什麼（修復後的優先序，src/index.ts 結尾）：
+  //   1. routine 拋錯        → 原樣拋出（本模型的 routine 不拋錯，故未建模）
+  //   2. signal.aborted      → 拋 signal.error      ← SIGNAL_ERROR
+  //   3. release 失敗        → 拋 release 的錯       ← RELEASE_ERROR
+  //   4. 否則                → 回傳 routine 的結果   ← RESULT
+  //
+  // **F7 的修復就在這個優先序裡**：abort 的原因排在 release 的錯誤之前，
+  // 因此不再被它遮蔽。沒有這個欄位，模型就無法區分「兩件事同時發生」
+  // （修復前後都會發生）與「哪一件被回報」（修復真正改變的東西）。
+  type UsingOutcome =
+    | NOT_FINISHED
+    | RESULT
+    | SIGNAL_ERROR
+    | RELEASE_ERROR
 
   // 鎖的可觀測狀態。value == 0 表示 client 目前不持有任何鎖（以 sentinel 取代
   // Option 型別：少一層代數資料型別，Apalache 的狀態空間明顯較小）。
@@ -95,12 +130,20 @@ module redlock {
     // 對應 signal.aborted：**只由 extend 失敗且鎖已失效時設為 true**。
     signalAbort: bool,
     // 是否曾出現「被自己上一輪留下的 key 擋住」（F2 的觀測點，只增不減）。
+    // **修復後恆為 false**——由 neverSelfBlocked 檢查，其非空跑性由
+    // witness retryFacesOwnResidualKey 保證。
     selfBlocked: bool,
-    // acquire/extend 結算時就「已經過期」的觀測點。
-    // 拆成兩個來源，才能分別證明 F1（acquire）與 F5（extend）各自可違反。
-    returnedExpired: bool,
-    expiredViaAcquire: bool,
-    expiredViaExtend: bool,
+    // **曾把一把「結算當下就已過期」的鎖交給呼叫端**（F1 / F5 的精確觀測點）。
+    //
+    // 修復後 completeAcquire / completeExtend 的 guard 已排除這種情形，因此本旗標
+    // 恆為 false——這正是 neverHandsOutExpiredLock 要斷言的事。它是**回歸防線**：
+    // 若日後有人拿掉那兩個 guard，這條不變式立刻會被違反。
+    //
+    // ⚠️ 注意「結算當下」：鎖在 AFTER_ACQUIRE 期間**自然到期**是正常行為，
+    // 不是缺陷，所以不能寫成「任何時刻 expiresAt 都 > now」那種過強的述詞。
+    handedExpiredLock: bool,
+    // using() 最終回報了什麼（F7）。
+    reported: UsingOutcome,
     // --- using() 的延伸狀態 ---
     extendPhase: ExtendPhase,
     extendStart: int,
@@ -236,20 +279,42 @@ module redlock {
   pure def isSilentlyUnderQuorum(s: State, c: ClientId): bool =
     believesHolds(s, c) and permitsOf(s, c).size() < quorumSize
 
-  // --- acquire 的節點端語意（ACQUIRE_SCRIPT，src/index.ts:12-27）-------------
+  // --- acquire 的節點端語意（ACQUIRE_SCRIPT，src/index.ts:12-29）-------------
 
-  // F2：exists 只問存在、不問是誰的——因此**自己**上一輪留下的 key 也會擋住自己。
+  // **F2 的修復就在這裡。**
+  //   修復前：`if exists(key) then return 0`——只問存在、不問是誰的，
+  //           因此自己上一輪留下的 key 也會擋住自己。
+  //   修復後：`if exists(key) and get(key) ~= ARGV[1] then return 0`——
+  //           只有**別人的** key 才構成阻擋；自己的 key 放行並覆寫 TTL。
+  //           等價於演算法要求的「重試前先把自己的殘留清乾淨」。
   pure def acquireBlockedBy(s: State, c: ClientId, n: NodeId): Set[Resource] =
-    RESOURCES.filter(r => keyExists(s.nodes.get(n).get(r), s.now))
+    val v = valOf(s.clients.get(c))
+    RESOURCES.filter(r =>
+      val e = s.nodes.get(n).get(r)
+      keyExists(e, s.now) and e.value != v
+    )
 
   pure def acquireOk(s: State, c: ClientId, n: NodeId): bool =
     acquireBlockedBy(s, c, n).size() == 0
 
+  // 「擋住我的 key 帶著我自己的 value」——修復後 acquireBlockedBy 已把同 value
+  // 濾掉，所以這個集合**由建構恆為空**。保留它是為了讓「不再自我阻塞」成為一條
+  // 可檢查的不變式，而不是把觀測點直接刪掉（刪掉就無從驗證）。
   pure def acquireSelfBlockNodes(s: State, c: ClientId): Set[NodeId] =
     val v = valOf(s.clients.get(c))
     NODES.filter(n =>
       v != 0 and
       acquireBlockedBy(s, c, n).exists(r => s.nodes.get(n).get(r).value == v)
+    )
+
+  // 某節點上已經有「自己的」未到期 key（= 上一輪 attempt 留下的殘留）。
+  // 修復前這種節點會擋住自己；修復後可被重新取得（TTL 覆寫）。
+  pure def hasOwnResidualKey(s: State, c: ClientId, n: NodeId): bool =
+    val v = valOf(s.clients.get(c))
+    v != 0 and
+    RESOURCES.exists(r =>
+      val e = s.nodes.get(n).get(r)
+      keyExists(e, s.now) and e.value == v
     )
 
   // --- extend 的節點端語意（EXTEND_SCRIPT，src/index.ts:29-44）---------------
@@ -334,7 +399,7 @@ module redlock {
     clients' = CLIENTS.mapBy(c => {
       routine: ROUTINE,
       acquirePhase: IDLE,
-      acquireKind: NO_VALIDITY_CHECK,
+      acquireKind: VALIDITY_CHECKED,
       acquireStart: 0,
       retriesLeft: 0,
       attemptDone: false,
@@ -342,9 +407,8 @@ module redlock {
       lock: emptyLock,
       signalAbort: false,
       selfBlocked: false,
-      returnedExpired: false,
-      expiredViaAcquire: false,
-      expiredViaExtend: false,
+      handedExpiredLock: false,
+      reported: NOT_FINISHED,
       extendPhase: EXTEND_IDLE,
       extendStart: 0,
       extendDone: false,
@@ -408,6 +472,8 @@ module redlock {
       releaseDone: false,
       releaseForCount: 0,
       releaseFailed: false,
+      // 新的一次 using() 呼叫：尚未回報任何結果。
+      reported: NOT_FINISHED,
     }),
     now' = now,
     nodes' = nodes,
@@ -433,7 +499,9 @@ module redlock {
       ...clients.get(c),
       attemptDone: true,
       grantedNodes: chosen,
-      // F2：被自己上一輪留下的 key 擋住
+      // F2 的觀測點：被自己上一輪留下的 key 擋住。
+      // 修復後 acquireBlockedBy 已濾掉同 value，故此集合恆空 → 由
+      // neverSelfBlocked 檢查。
       selfBlocked: clients.get(c).selfBlocked or
         acquireSelfBlockNodes(mkState(now, nodes, clients), c).size() > 0,
     }),
@@ -448,14 +516,15 @@ module redlock {
 
   // 結算 acquire：`_execute` 的 quorum 判定 ＋ `acquire()` 建構 Lock。
   //
-  // **F1 就在這裡**：expiresAt = acquireStart + DURATION - DRIFT，而程式碼
-  // 從不比對它與 Date.now()。若往返期間 client 停頓使該值 <= now，
-  // 呼叫端就拿到一把「已過期卻無錯誤」的鎖（src/index.ts:318-329）。
-  // returnedExpired 就是「缺少的檢查」的精確觀測點。
+  // **F1 的修復就在這裡**：修復後多了 `if (Date.now() >= expiration) throw`，
+  // 因此「達成 quorum」不再足以交出一把鎖——還必須 validity 未耗盡。
+  // 過期的那一支走 abortAcquireExpired。
   action completeAcquire(c: ClientId): bool = all {
     clients.get(c).acquirePhase == AWAIT_ACQUIRE,
     clients.get(c).attemptDone,
     hasQuorum(clients.get(c).grantedNodes.size()),
+    // 修復後新增的檢查（as-is 版本沒有這一行，這正是 F1）。
+    acquireBelieved(clients.get(c)) > now,
     clients' = clients.set(c, {
       ...clients.get(c),
       acquirePhase: AFTER_ACQUIRE,
@@ -465,15 +534,42 @@ module redlock {
         expiresAt: acquireBelieved(clients.get(c)),
         permits: clients.get(c).grantedNodes,
       },
-      // 正確的實作會在此拒絕並解鎖；as-is 直接回傳（src/index.ts:323-329）。
-      // F1：來源是 acquire 結算。
-      expiredViaAcquire: clients.get(c).expiredViaAcquire or
-        acquireBelieved(clients.get(c)) <= now,
-      returnedExpired: clients.get(c).returnedExpired or
+      // 由上面的 guard 保證恆為 false；保留賦值是為了讓
+      // neverHandsOutExpiredLock 成為可檢查的回歸防線（拿掉 guard 就會紅）。
+      handedExpiredLock: clients.get(c).handedExpiredLock or
         acquireBelieved(clients.get(c)) <= now,
     }),
     now' = now,
     nodes' = nodes,
+  }
+
+  // **F1 修復後新增的路徑**：已達 quorum，但往返期間 client 停頓，使算出的
+  // validity 已經耗盡。修復後的程式碼丟 ExecutionError，而那個 throw 落在
+  // acquire() 既有的 catch 內 → **補償釋放**部分節點上的 key → 才 reject。
+  //
+  // 與 failAcquire 一樣，「補償釋放」與「回到 caller」是同一個 await 的兩半，
+  // 因此寫成同一個原子動作（不得讓模型停在「已放棄但未清理」）。
+  action abortAcquireExpired(c: ClientId): bool = all {
+    clients.get(c).acquirePhase == AWAIT_ACQUIRE,
+    clients.get(c).attemptDone,
+    hasQuorum(clients.get(c).grantedNodes.size()),
+    acquireBelieved(clients.get(c)) <= now,
+    nodes' = NODES.fold(nodes, (acc, n) =>
+      acc.set(n, RESOURCES.mapBy(r =>
+        if (releaseMine(mkState(now, nodes, clients), c, n).contains(r))
+          emptyEntry
+        else
+          nodes.get(n).get(r)
+      ))
+    ),
+    clients' = clients.set(c, {
+      ...clients.get(c),
+      acquirePhase: IDLE,
+      attemptDone: false,
+      grantedNodes: Set(),
+      lock: emptyLock,
+    }),
+    now' = now,
   }
 
   // 本次 attempt 未達 quorum → retry 迴圈再跑一輪（src/index.ts:436-470）。
@@ -607,11 +703,14 @@ module redlock {
   // （src/index.ts:515-521），因此少數節點上已遺失的 key **永遠不會被補回**。
   // permits 只 += 本次投 for 的節點（只增不減），真實覆蓋率要等 permitsOf 才揭曉。
   //
-  // F5：與 acquire 一樣**沒有** validity <= 0 檢查（src/index.ts:400-406）。
+  // F5 的修復：與 acquire 一樣新增 validity 檢查（src/index.ts 的 extend()）。
+  // 過期的那一支走 abortExtendExpired。
   action completeExtend(c: ClientId): bool = all {
     clients.get(c).extendPhase == AWAIT_EXTEND,
     clients.get(c).extendDone,
     hasQuorum(clients.get(c).extendGranted.size()),
+    // 修復後新增的檢查（as-is 版本沒有這一行，這正是 F5）。
+    extendBelieved(clients.get(c)) > now,
     clients' = clients.set(c, {
       ...clients.get(c),
       extendPhase: EXTEND_IDLE,
@@ -620,14 +719,44 @@ module redlock {
         expiresAt: extendBelieved(clients.get(c)),
         permits: clients.get(c).lock.permits.union(clients.get(c).extendGranted),
       },
-      // F5：來源是 extend 結算（replacement Lock 同樣缺 validity 檢查）。
-      expiredViaExtend: clients.get(c).expiredViaExtend or
-        extendBelieved(clients.get(c)) <= now,
-      returnedExpired: clients.get(c).returnedExpired or
+      // 同 completeAcquire：由 guard 保證恆為 false，作為回歸防線保留。
+      handedExpiredLock: clients.get(c).handedExpiredLock or
         extendBelieved(clients.get(c)) <= now,
     }),
     now' = now,
     nodes' = nodes,
+  }
+
+  // **F5 修復後新增的路徑**：續期達成 quorum，但 validity 已耗盡。
+  // 修復後的 extend() 會**主動釋放**這把已失效的鎖，然後丟 ExecutionError。
+  //
+  // 那個 throw 落在 using() 內 extend() 的 catch，與任何其他續期失敗走同一條路：
+  // 若舊的 lock.expiration 仍在未來就重試（此時 key 已被釋放，必然再失敗），
+  // 否則設定 signal.error 並 abort（src/index.ts 的 catch 區塊）。
+  // 因此這裡的 signalAbort 判定與 failExtend 完全一致。
+  action abortExtendExpired(c: ClientId): bool = all {
+    clients.get(c).extendPhase == AWAIT_EXTEND,
+    clients.get(c).extendDone,
+    hasQuorum(clients.get(c).extendGranted.size()),
+    extendBelieved(clients.get(c)) <= now,
+    // 修復後的 extend() 在丟錯前先釋放（避免這把鎖佔住節點直到 TTL 自然到期）
+    nodes' = NODES.fold(nodes, (acc, n) =>
+      acc.set(n, RESOURCES.mapBy(r =>
+        if (releaseMine(mkState(now, nodes, clients), c, n).contains(r))
+          emptyEntry
+        else
+          nodes.get(n).get(r)
+      ))
+    ),
+    clients' = clients.set(c, {
+      ...clients.get(c),
+      extendPhase: EXTEND_IDLE,
+      signalAbort: if (stillValidAt(clients.get(c), now))
+        clients.get(c).signalAbort
+      else
+        true,
+    }),
+    now' = now,
   }
 
   // extend 未達 quorum。using() 的 extend() 檢查
@@ -689,8 +818,27 @@ module redlock {
 
   // 結算 release。投贊成的節點數 < quorum 即視為失敗。
   //
-  // F7：失敗的 release 會從 using() 的 finally 拋出
-  // （src/index.ts:354-363 + 767），吃掉 routine 的正常回傳值與 signal.error。
+  // **F7 的修復就在這裡。**
+  //   修復前：release 失敗會從 `finally` 拋出，**吃掉** routine 的回傳值與
+  //           signal.error——呼叫端拿到的是「釋放失敗」，而不是「鎖掉了」。
+  //   修復後：改用明確的優先序——signal.error 排在 release 的錯誤**之前**，
+  //           因此 abort 的原因不再被遮蔽（src/index.ts 結尾）。
+  //
+  // 注意：`releaseFailed and signalAbort` 這個**狀態組合修復前後都會發生**，
+  // 修復改變的是**回報哪一個**。所以 F7 的不變式必須寫在 reported 上，
+  // 寫在 releaseFailed/signalAbort 上只會得到一條修復後仍然被違反的假結論。
+  // **保真度（本次新增的 guard）**：`await lock.release()` 之後 `using()` 就返回了，
+  // routine 已經結束——因此 client 必須離開 routine 的所有階段，回到 IDLE。
+  //
+  // 沒有這一行的話，模型允許 client 在 release 完成之後**再做一次
+  // `doIsolationCheck`**（它的 guard 只要求 `acquirePhase == AFTER_ACQUIRE`），
+  // 於是 `signalAbort` 會在 `reported` 已經決定之後才變成 true，憑空製造出
+  // 「abort 被 release 的錯誤遮蔽」的假象。
+  //
+  // ⚠️ **as-is 版本的 F7 反例正是這個假象**（見 traces/as-is 的解碼：
+  // 第 8 狀態 release 已失敗完成、`signalAbort=false`，第 9 狀態才由
+  // doIsolationCheck 把 `signalAbort` 設為 true）。詳見 specs/README.md
+  // 「as-is 的 F7 反例是模型假象」。
   action completeRelease(c: ClientId): bool = all {
     clients.get(c).releasing,
     clients.get(c).releaseDone,
@@ -699,6 +847,15 @@ module redlock {
       releaseFailed: not(hasQuorum(clients.get(c).releaseForCount)),
       lock: emptyLock,
       releasing: false,
+      // using() 返回：routine 的所有階段都已結束
+      acquirePhase: IDLE,
+      reported:
+        if (clients.get(c).signalAbort)
+          SIGNAL_ERROR
+        else if (not(hasQuorum(clients.get(c).releaseForCount)))
+          RELEASE_ERROR
+        else
+          RESULT,
     }),
     now' = now,
     nodes' = nodes,
@@ -717,6 +874,7 @@ module redlock {
       startAcquire(c),
       attemptAcquire(c, chosen),
       completeAcquire(c),
+      abortAcquireExpired(c),
       retryAcquire(c),
       failAcquire(c),
       doIsolationCheck(c),
@@ -726,6 +884,7 @@ module redlock {
       startExtend(c),
       attemptExtend(c),
       completeExtend(c),
+      abortExtendExpired(c),
       failExtend(c),
       startRelease(c),
       attemptRelease(c),
@@ -748,11 +907,15 @@ module redlock {
       c1 == c2 or not(trulyHolds(s, c1) and trulyHolds(s, c2))
     ))
 
-  // **F1 / F5**：acquire() 或 extend() 在結算時，算出的 expiration 已經過去了，
-  // 而程式碼**沒有任何檢查**就把它回傳給呼叫端。
-  // 這是 catalog-info.yaml 所述「鎖已過期後仍被認為持有」的上游。
-  val INV_VIOLATED_returnsExpiredLock: bool =
-    CLIENTS.forall(c => not(clients.get(c).returnedExpired))
+  // **F1 / F5（修復後成立）**：從來沒有一把「結算當下就已過期」的鎖被交給呼叫端。
+  //
+  // ⚠️ 這條若單獨看是**結構上必然成立**的（completeAcquire / completeExtend 的
+  // guard 直接排除了它）。它的價值有兩個，都不在於「證明了什麼新東西」：
+  //   1. **回歸防線**：日後若有人拿掉那兩個 guard，這條立刻紅。
+  //   2. 配合下方的 witness 才有內容——witness 證明「validity 已耗盡」這個
+  //      危險狀態**確實可達**，所以本條不是「模型根本沒走到那裡」。
+  val neverHandsOutExpiredLock: bool =
+    CLIENTS.forall(c => not(clients.get(c).handedExpiredLock))
 
   // **F3**：client 相信持有有效鎖，但真實覆蓋率已跌破 quorum（靜默失去 quorum）。
   //
@@ -764,14 +927,14 @@ module redlock {
     val s = mkState(now, nodes, clients)
     CLIENTS.forall(c => not(isSilentlyUnderQuorum(s, c)))
 
-  // **F1 專屬**：來源限縮在 acquire 結算，證明「回傳已過期的鎖」不需靠 extend 路徑。
-  val INV_VIOLATED_acquireReturnsExpiredLock: bool =
-    CLIENTS.forall(c => not(clients.get(c).expiredViaAcquire))
-
-  // **F5 專屬**：來源限縮在 extend 結算（replacement Lock）。
-  // 這條與 F1 分開，才能回答「extend() 的 check-then-act 是否獨立成立」。
-  val INV_VIOLATED_extendReturnsExpiredLock: bool =
-    CLIENTS.forall(c => not(clients.get(c).expiredViaExtend))
+  // **F2（修復後成立）**：從來沒有 client 被「自己的 value」擋住。
+  //
+  // ⚠️ 同樣是結構上必然成立的（acquireBlockedBy 已把同 value 濾掉）。
+  // 內容由 witness retryFacesOwnResidualKey 提供：它證明「重試時節點上還留著
+  // 自己上一輪的 key」這個情境確實會發生，而且此時該節點是**可取得的**
+  // ——修復前那正是卡死的來源。
+  val neverSelfBlocked: bool =
+    CLIENTS.forall(c => not(clients.get(c).selfBlocked))
 
   // **F8（Kleppmann）**：不存在兩個 client **同時相信自己持有鎖**。
   // 節點崩潰重啟遺失未同步的 key 後，另一個 client 可以取得 quorum，
@@ -786,39 +949,72 @@ module redlock {
   val INV_VIOLATED_concurrentCriticalSections: bool =
     criticalCount(mkState(now, nodes, clients)) <= 1
 
-  // **F7**：release 失敗吃掉了已發生的 abort 錯誤
-  // （routine 想回報的問題被 release 的例外覆蓋）。
-  val INV_VIOLATED_releaseErrorMasksAbort: bool =
+  // **F7（修復後成立）**：abort 的原因**永遠不會被 release 的錯誤遮蔽**。
+  //
+  // 這條與前兩條不同，它**不是**結構上的同義反覆：`releaseFailed ∧ signalAbort`
+  // 這個狀態組合修復前後都會發生（見 witness releaseFailedWhileAborted）。
+  // 修復改變的是**回報哪一個**——因此本條寫在 reported 上。
+  //
+  // 對照組：若把述詞寫成 as-is 版本的 `not(releaseFailed and signalAbort)`，
+  // 修復後**仍然會被違反**，並得出「F7 沒修好」的假結論。
+  val abortReasonNeverMasked: bool =
     CLIENTS.forall(c =>
-      not(clients.get(c).releaseFailed and clients.get(c).signalAbort)
+      not(clients.get(c).signalAbort and clients.get(c).reported == RELEASE_ERROR)
     )
 
   // ===========================================================================
   // 性質（Step 5）—— 正向 witness（要求 trace 數 > 0）
+  //
+  // **這一節是 as-fixed 規格的重點。** 上面那些「修復後成立」的不變式，若沒有
+  // 對應的 witness 證明其守護的危險狀態可達，就只是「模型沒走到那裡」的空跑。
+  // 以下四個 witness 全部寫成**純狀態述詞**（不新增任何狀態變數）。
   // ===========================================================================
 
-  // **F2(a)**：某 client 曾被**自己上一輪 attempt 留下的 key** 擋住。
-  val selfBlockedByOwnValue: bool =
-    CLIENTS.exists(c => clients.get(c).selfBlocked)
-
-  // **F2(b)**：兩個 client 都曾被自己的殘留 key 擋住，且兩人都**仍在同一次
-  // acquire() 的重試迴圈內**（AWAIT_ACQUIRE、本次 attempt 已完成、未達 quorum）
-  // ——即雙方在重試窗口內互相卡死。
-  //
-  // ⚠️ 保真度修正：舊版把這個述詞寫成「兩人都已退回 IDLE 且仍帶著殘留 value」。
-  // 那是**真實到不了的狀態**——acquire() 的補償釋放與「回到 caller」是同一個
-  // await 的兩半（src/index.ts:330-340），所以 IDLE 必然代表手上沒有殘留 key。
-  // 危害確實存在，但它的位置是**重試窗口之內**，不是窗口之外。
-  //
-  // ⚠️ 此狀態在隨機走訪下機率約 0.0015%，**不應**作為 CI 的百分比斷言。
-  // 可達性由 redlockTest.qnt 的 redlockF2Scenario::bothClientsStarveTest
-  // 以決定性腳本證明。
-  val bothClientsFailWithinRetryWindow: bool =
-    CLIENTS.size() == 2 and
-    CLIENTS.forall(c =>
-      clients.get(c).selfBlocked and
-      clients.get(c).acquirePhase == AWAIT_ACQUIRE and
-      clients.get(c).attemptDone and
-      not(hasQuorum(clients.get(c).grantedNodes.size()))
+  // **F1 的檢查確實會觸發**：已達 quorum，但算出的 validity 已經耗盡。
+  // 這正是 abortAcquireExpired 的 guard；修復前這個狀態會直接走進
+  // completeAcquire 並交出一把過期的鎖。
+  val acquireExpiryDetectable: bool =
+    CLIENTS.exists(c =>
+      val cs = clients.get(c)
+      cs.acquirePhase == AWAIT_ACQUIRE and
+      cs.attemptDone and
+      hasQuorum(cs.grantedNodes.size()) and
+      acquireBelieved(cs) <= now
     )
+
+  // **F5 的檢查確實會觸發**：續期已達 quorum，但 replacement 的 validity 已耗盡。
+  val extendExpiryDetectable: bool =
+    CLIENTS.exists(c =>
+      val cs = clients.get(c)
+      cs.extendPhase == AWAIT_EXTEND and
+      cs.extendDone and
+      hasQuorum(cs.extendGranted.size()) and
+      extendBelieved(cs) <= now
+    )
+
+  // **F2 的修復確實走在真實的路徑上**：client 正要重試，某節點上還留著
+  // **自己上一輪**的 key，而且該節點此刻是**可取得的**（acquireOk）。
+  //
+  // 最後那個合取項就是修復本身：修復前同一個狀態下 acquireOk 為 false
+  // （`exists` 不問是誰的），client 會被自己的殘留 key 擋住。
+  val retryFacesOwnResidualKey: bool =
+    val s = mkState(now, nodes, clients)
+    CLIENTS.exists(c =>
+      val cs = clients.get(c)
+      cs.acquirePhase == AWAIT_ACQUIRE and
+      not(cs.attemptDone) and
+      cs.lock.value != 0 and
+      NODES.exists(n => hasOwnResidualKey(s, c, n) and acquireOk(s, c, n))
+    )
+
+  // **F7 的危險組合確實可達**：release 失敗**且**已經 abort。
+  // 沒有這個 witness，abortReasonNeverMasked 就可能只是因為兩者從未同時成立。
+  val releaseFailedWhileAborted: bool =
+    CLIENTS.exists(c =>
+      clients.get(c).releaseFailed and clients.get(c).signalAbort
+    )
+
+  // **F7 的修復路徑確實被走到**：確實有 client 以 SIGNAL_ERROR 收場。
+  val reportedSignalError: bool =
+    CLIENTS.exists(c => clients.get(c).reported == SIGNAL_ERROR)
 }

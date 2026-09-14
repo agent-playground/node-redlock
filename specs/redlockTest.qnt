@@ -161,19 +161,17 @@ module redlockAssumptions {
       .expect(NODES.forall(n => RESOURCES.forall(r => nodes.get(n).get(r).value == 0)))
       .expect(CLIENTS.forall(c => not(believesHolds(mkState(now, nodes, clients), c))))
       .expect(not(mutualExclusionOnNodes == false))
-      .expect(not(INV_VIOLATED_returnsExpiredLock == false))
+      .expect(not(neverHandsOutExpiredLock == false))
+      .expect(not(neverSelfBlocked == false))
+      .expect(CLIENTS.forall(c => clients.get(c).reported == NOT_FINISHED))
 }
 
-// F2(b) 的**決定性**可達性證明。
+// 三個修復（F1 / F5 / F2）的**決定性**驗證。
 //
-// 這個狀態在隨機走訪下機率極低（實測 `--witnesses` 只有 6/400000 ≈ 0.0015%），
-// 不適合作為 CI 的百分比斷言。改用決定性的 run 測試：`attemptAcquire` 的
-// `chosen` 是動作參數，測試可以直接指定搶到哪些節點，把 F2 的交錯腳本化。
-//
-// 劇本：兩個 client 各搶到一半節點（各 1 個，都未達 quorum 2），各自 retry；
-// 下一輪 attempt 都撞到**自己上一輪留下的 key**（`exists` 只問存在、不問是誰的），
-// 於是雙方都再也拿不到 quorum —— 互相卡死到 TTL。
-module redlockF2Scenario {
+// 為什麼要決定性腳本而不只靠 witness 百分比：`attemptAcquire` 的 `chosen` 是
+// 動作參數，測試可以直接指定「誰搶到哪些節點」，把交錯完全腳本化。這比隨機
+// 走訪抽到的 witness 更強——它可重現，而且能斷言路徑上的每一個中間狀態。
+module redlockFixScenario {
   import redlock(
     NODES = Set(1, 2, 3),
     CLIENTS = Set(1, 2),
@@ -188,7 +186,13 @@ module redlockF2Scenario {
     RETRY_BUDGET = 1,
   ).* from "./redlock"
 
-  run bothClientsStarveTest =
+  // --- F2：修復前會卡死的那個劇本，現在能走出來 ---------------------------
+  //
+  // 劇本與 as-is 版本的 bothClientsStarveTest **完全相同**（兩個 client 各搶到
+  // 一半節點、各自 retry），差別只在第二輪：
+  //   修復前：節點 1／2 上是自己的 key，被 `exists` 擋住 → 雙方卡死到 TTL。
+  //   修復後：自己的 key 不再擋自己 → client 1 補上節點 3 就達成 quorum。
+  run retryEscapesSelfBlockTest =
     init
       // client 1 只搶到節點 1（1 票 < quorum 2）→ retry（仍在 AWAIT_ACQUIRE 之內）
       .then(startAcquire(1))
@@ -198,35 +202,133 @@ module redlockF2Scenario {
       .then(startAcquire(2))
       .then(attemptAcquire(2, Set(2)))
       .then(retryAcquire(2))
-      // 第二次 attempt：節點 1／2 上是**自己的** key，被 exists 擋住。
-      // 注意這裡**不再呼叫 startAcquire**——真實的重試不是新的 acquire() 呼叫，
-      // 而是 _execute 的 while 迴圈（src/index.ts:436-470），client 沒有回到 caller。
-      .then(attemptAcquire(1, Set()))
-      .then(attemptAcquire(2, Set()))
-      // 兩人都還在重試窗口內、都被自己的 key 擋過、都沒有 quorum
-      .expect(bothClientsFailWithinRetryWindow)
-      .expect(selfBlockedByOwnValue)
-      .expect(clients.get(1).selfBlocked)
-      .expect(clients.get(2).selfBlocked)
-      .expect(clients.get(1).acquirePhase == AWAIT_ACQUIRE)
-      .expect(clients.get(2).acquirePhase == AWAIT_ACQUIRE)
-      .expect(clients.get(1).retriesLeft == 0)
-      .expect(clients.get(2).retriesLeft == 0)
-      // 殘留的 key 仍在節點上（value 各為 100 / 200）—— 這正是自我阻塞的來源
+      // 殘留 key 確實還在節點上（value 各為 100 / 200）
       .expect(nodes.get(1).get("r").value == 100)
       .expect(nodes.get(2).get("r").value == 200)
-      // 而且沒有任何一方真正持有鎖
-      .expect(not(trulyHolds(mkState(now, nodes, clients), 1)))
-      .expect(not(trulyHolds(mkState(now, nodes, clients), 2)))
-      // 預算耗盡 → 唯一的出口是「補償釋放 + 回到 IDLE」，兩者是同一個動作
-      .then(failAcquire(1))
+      // **修復的本體**：帶著自己殘留 key 的節點 1 是可取得的，
+      // 而帶著別人 key 的節點 2 仍然擋得住 —— 兩者必須分開，否則
+      // 「不再自我阻塞」與「鎖根本不互斥」在斷言上無法區分。
+      .expect(retryFacesOwnResidualKey)
+      .expect(acquireOk(mkState(now, nodes, clients), 1, 1))
+      .expect(not(acquireOk(mkState(now, nodes, clients), 1, 2)))
+      // 第二次 attempt：重新取得自己的節點 1，再補上空閒的節點 3 → quorum
+      .then(attemptAcquire(1, Set(1, 3)))
+      .expect(not(clients.get(1).selfBlocked))
+      .then(completeAcquire(1))
+      .expect(clients.get(1).acquirePhase == AFTER_ACQUIRE)
+      .expect(trulyHolds(mkState(now, nodes, clients), 1))
+      // client 2 則被 client 1 的鎖**正當地**擋住：它只拿得回自己的節點 2，
+      // 達不到 quorum，預算耗盡後補償釋放並回到 IDLE。
+      .then(attemptAcquire(2, Set(2)))
+      .expect(not(hasQuorum(clients.get(2).grantedNodes.size())))
       .then(failAcquire(2))
-      .expect(clients.get(1).acquirePhase == IDLE)
       .expect(clients.get(2).acquirePhase == IDLE)
-      // 補償釋放把殘留 key 清掉了。舊版模型允許「IDLE + 殘留 key」，
-      // 那是真實程式碼到不了的狀態；這裡把它證明為不可停留。
+      .expect(not(holdsSomething(clients.get(2))))
+      .expect(nodes.get(2).get("r").value == 0)
+      // 全程沒有任何一方被自己的 value 擋住
+      .expect(neverSelfBlocked)
+
+  // --- F1：acquire 的 validity 檢查確實會觸發，且會補償釋放 -----------------
+  //
+  // DURATION=2 / DRIFT=1 → acquireBelieved = acquireStart + 1。
+  // 在 attempt 與結算之間插入一次 advanceTime，validity 就恰好耗盡。
+  run acquireValidityCheckTest =
+    init
+      .then(startAcquire(1))
+      .then(attemptAcquire(1, Set(1, 2)))
+      // 節點上的 key 到 now+DURATION=2 才到期，但 client 相信的到期是 1
+      .expect(nodes.get(1).get("r").expiresAt == 2)
+      .then(advanceTime)
+      // now=1，acquireBelieved=1 → validity 已耗盡
+      .expect(acquireExpiryDetectable)
+      .then(abortAcquireExpired(1))
+      // 修復後：不交出鎖，而是回到 IDLE
+      .expect(clients.get(1).acquirePhase == IDLE)
+      .expect(not(holdsSomething(clients.get(1))))
+      .expect(not(clients.get(1).handedExpiredLock))
+      .expect(neverHandsOutExpiredLock)
+      // 補償釋放清掉了部分節點上的 key（修復前這些 key 會留到 TTL 自然到期）
       .expect(nodes.get(1).get("r").value == 0)
       .expect(nodes.get(2).get("r").value == 0)
-      .expect(not(holdsSomething(clients.get(1))))
-      .expect(not(holdsSomething(clients.get(2))))
+
+  // --- F5：extend 的 validity 檢查確實會觸發，且會釋放已失效的鎖 ------------
+  run extendValidityCheckTest =
+    init
+      .then(startAcquire(1))
+      .then(attemptAcquire(1, Set(1, 2)))
+      .then(completeAcquire(1))
+      .expect(clients.get(1).lock.expiresAt == 1)
+      // 到期前 EXTENSION_THRESHOLD=1 觸發自動續期
+      .then(startExtend(1))
+      .then(attemptExtend(1))
+      .then(advanceTime)
+      // now=1，extendBelieved=1 → replacement 的 validity 已耗盡
+      .expect(extendExpiryDetectable)
+      .then(abortExtendExpired(1))
+      .expect(clients.get(1).extendPhase == EXTEND_IDLE)
+      .expect(not(clients.get(1).handedExpiredLock))
+      .expect(neverHandsOutExpiredLock)
+      // 修復後的 extend() 在丟錯前主動釋放這把已失效的鎖
+      .expect(nodes.get(1).get("r").value == 0)
+      .expect(nodes.get(2).get("r").value == 0)
+
+  // --- F7：release 失敗**且**已 abort 時，回報的是 abort 的原因 --------------
+  //
+  // 這條是四個「修復後成立」的不變式裡**唯一不是結構同義反覆**的一條，因此
+  // 它的可達性最值得用決定性腳本釘死（隨機 witness 只有 0.18%）。
+  //
+  // 劇本：取得鎖 → 續期時節點上的 key 已自然到期 → 續期拿不到 quorum 且鎖已
+  // 失效 → signalAbort；此時 release 也因為沒有 key 可刪而拿不到 quorum → 失敗。
+  run abortReasonSurvivesReleaseFailureTest =
+    init
+      .then(startAcquire(1))
+      .then(attemptAcquire(1, Set(1, 2)))
+      .then(completeAcquire(1))
+      .then(startExtend(1))
+      .then(advanceTime)
+      .then(advanceTime) // now=2：節點上的 key（expiresAt=2）已自然到期
+      .then(attemptExtend(1))
+      .expect(clients.get(1).extendGranted.size() == 0)
+      .then(failExtend(1))
+      .expect(clients.get(1).signalAbort)
+      .then(startRelease(1))
+      .then(attemptRelease(1))
+      .then(completeRelease(1))
+      // **兩件事同時成立——修復前後都會發生。**
+      // 下面這兩個 expect 正是 as-is 版本 INV_VIOLATED_releaseErrorMasksAbort
+      // 的違反條件：若沿用那條述詞，修復後仍會「找到反例」，並得出
+      // 「F7 沒修好」的假結論。
+      .expect(clients.get(1).releaseFailed)
+      .expect(clients.get(1).signalAbort)
+      .expect(releaseFailedWhileAborted)
+      // **修復真正改變的事**：回報的是 abort 的原因，不是 release 的錯誤。
+      .expect(clients.get(1).reported == SIGNAL_ERROR)
+      .expect(abortReasonNeverMasked)
+
+  // --- 保真度回歸：using() 在 release 完成後就返回，routine 不得再執行 -------
+  //
+  // 這條測試存在的原因是一個**真實發生過的模型缺陷**：`completeRelease` 原本
+  // 不改 `acquirePhase`，於是 client 可以在 release 完成之後再做一次
+  // `doIsolationCheck`，把 `signalAbort` 設成 true——而 `reported` 早就決定了。
+  // 那會憑空製造出「abort 被 release 的錯誤遮蔽」的假反例。
+  // **as-is 版本的 F7 反例正是這個假象**（見 specs/README.md）。
+  run usingCycleEndsAtReleaseTest =
+    init
+      .then(startAcquire(1))
+      .then(attemptAcquire(1, Set(1, 2)))
+      .then(completeAcquire(1))
+      .then(advanceTime)
+      .then(advanceTime) // now=2：節點 key（expiresAt=2）已到期 → release 會失敗
+      .then(startRelease(1))
+      .then(attemptRelease(1))
+      .then(completeRelease(1))
+      .expect(clients.get(1).releaseFailed)
+      .expect(clients.get(1).reported == RELEASE_ERROR)
+      .expect(not(clients.get(1).signalAbort))
+      // **保真度斷言**：using() 已返回，client 回到 IDLE，
+      // 因此 doIsolationCheck / enterCritical / startExtend 全部不再 enabled。
+      .expect(clients.get(1).acquirePhase == IDLE)
+      .expect(not(canEnterCritical(mkState(now, nodes, clients), 1)))
+      .expect(not(canStartExtend(mkState(now, nodes, clients), 1)))
+      .expect(abortReasonNeverMasked)
 }
