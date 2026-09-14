@@ -1,0 +1,363 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat Model 1.2//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>/**
+ * Redlock F9（時鐘突跳 / NTP Step）—— UPPAAL 時間自動機模型
+ *
+ * 目的：回答一個 Quint 模型回答不了的問題——「客戶端與節點的物理時鐘不同步」
+ * 是否足以獨立破壞 Redlock 的互斥性？
+ *
+ * ---------------------------------------------------------------------------
+ * 建模關鍵一：UPPAAL 的 clock 不能被位移
+ *
+ * UPPAAL 的 clock 只能「重設為 0」，**不能被讀進算術式**。
+ * 寫成 `c_node[1] := c_node[1] + DELTA` 會被型別檢查擋下：
+ *     [error] When using symbolic methods clock cannot be read as double value
+ * 這是 DBM（Difference Bound Matrix）zone 抽象的固有限制，不是語法糖問題。
+ *
+ * 因此所有時鐘突跳一律以**整數偏移量**表達，把位移搬進 guard 的常數側：
+ *     節點的有效經過時間 = c_node[i] + node_ofs[i]
+ *         → TTL 判斷 `c_node[i] &gt;= DURATION - node_ofs[i]`
+ *     客戶端量到的經過時間 = c_client[c] - client_skew[c]
+ *         → 租約判斷 `c_client[c] &lt; DURATION - DRIFT + client_skew[c]`
+ *
+ * ---------------------------------------------------------------------------
+ * 建模關鍵二：兩種時鐘異常必須分開，否則 F9 與 F8 無法區分
+ *
+ * NodeClockAdversary   —— 節點時鐘**往前**跳：key 比客戶端預期更早過期。
+ *                         這在效果上等同於「節點崩潰遺失 key」（F8 / Kleppmann），
+ *                         Quint 模型已用 crashAndLoseKey 證過。
+ *
+ * ClientClockAdversary —— 客戶端時鐘**往後**跳：客戶端高估自己的剩餘租約，
+ *                         賴在臨界區超過真實 TTL。**這才是 F9 的本體**：
+ *                         它不需要任何節點異常就能破壞互斥性。
+ *
+ * 兩者各自有計數器（node_jumps / client_jumps），因此「陰性對照」與
+ * 「F9 與 F8 的分離」都可以直接寫成**查詢條件**，不必修改模型檔案：
+ *     E&lt;&gt; (兩者同時在臨界區 &amp;&amp; node_jumps == 0 &amp;&amp; client_jumps == 0)  應為 NOT satisfied
+ *     E&lt;&gt; (兩者同時在臨界區 &amp;&amp; node_jumps == 0)                        應為 SATISFIED  ← F9
+ * ---------------------------------------------------------------------------
+ */
+
+// --- 系統規模 ---
+const int N = 3;             // Redis 節點數（0, 1, 2）
+const int M = 2;             // 並行客戶端數（0, 1）
+const int QUORUM = 2;        // floor(N/2) + 1
+
+// --- 時間參數（毫秒）---
+const int DURATION = 20;     // 鎖的 TTL
+const int DRIFT = 2;         // driftFactor 補償量；客戶端相信的租約 = DURATION - DRIFT
+const int MIN_NET_DELAY = 1; // 單次請求的最小網路延遲
+const int MAX_NET_DELAY = 3; // 單次請求的最大網路延遲
+
+// --- 對手能力上界（同時也是狀態空間的控制旋鈕）---
+const int MAX_STEP = 15;     // 單次時鐘突跳的最大幅度（非確定性選取 1..MAX_STEP）
+const int MAX_JUMPS = 1;     // 每一種對手最多能發動幾次突跳
+
+typedef int[0, N - 1] node_id_t;
+typedef int[0, M - 1] client_id_t;
+
+// --- 連續時鐘：每個節點、每個客戶端各自獨立 ---
+clock c_node[N];
+clock c_client[M];
+
+// --- 時鐘突跳的整數編碼（見檔頭「建模關鍵一」）---
+int[0, MAX_STEP * MAX_JUMPS] node_ofs[N];    // 節點時鐘往前跳的累積量
+int[0, MAX_STEP * MAX_JUMPS] client_skew[M]; // 客戶端時鐘往後跳的累積量
+
+// --- 突跳計數器：讓陰性對照與 F9/F8 分離可以寫成查詢條件 ---
+int[0, MAX_JUMPS] node_jumps = 0;
+int[0, MAX_JUMPS] client_jumps = 0;
+
+// --- 節點狀態：-1 表示無人持有 ---
+int[-1, M - 1] lock_holder[N] = {-1, -1, -1};
+
+// --- 客戶端與節點之間的同步通道 ---
+chan req_grant[M][N];
+chan req_reject[M][N];
+chan unlock[M][N];
+</declaration>
+	<template>
+		<name x="5" y="5">RedisNode</name>
+		<parameter>const node_id_t id</parameter>
+		<declaration>/**
+ * Redis 節點：維護單一 key 與其 TTL。
+ *
+ * 有效經過時間 = c_node[id] + node_ofs[id]，因此 TTL 判斷寫成
+ * `c_node[id] &gt;= DURATION - node_ofs[id]`。
+ *
+ * 授予條件對應**修復後**的 ACQUIRE_SCRIPT 語意（F2 已修）：
+ *   key 不存在 ── 或 ── key 是**自己的**（同 value）── 或 ── key 已過期  → 授予
+ *   key 是**別人的**且未過期                                              → 拒絕
+ * 兩者互補且涵蓋全部情形，所以節點永遠能回應（不會讓客戶端卡在 ReqNode）。
+ */
+</declaration>
+		<location id="id0" x="0" y="0">
+			<name x="-34" y="-34">Active</name>
+		</location>
+		<init ref="id0"/>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id0"/>
+			<label kind="select" x="-280" y="-140">c : client_id_t</label>
+			<label kind="guard" x="-280" y="-120">lock_holder[id] == -1 ||
+lock_holder[id] == c ||
+c_node[id] &gt;= DURATION - node_ofs[id]</label>
+			<label kind="synchronisation" x="-280" y="-70">req_grant[c][id]?</label>
+			<label kind="assignment" x="-280" y="-50">lock_holder[id] = c,
+c_node[id] = 0,
+node_ofs[id] = 0</label>
+			<nail x="-70" y="-100"/>
+			<nail x="-110" y="-30"/>
+		</transition>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id0"/>
+			<label kind="select" x="60" y="-140">c : client_id_t</label>
+			<label kind="guard" x="60" y="-120">lock_holder[id] != -1 &amp;&amp;
+lock_holder[id] != c &amp;&amp;
+c_node[id] &lt; DURATION - node_ofs[id]</label>
+			<label kind="synchronisation" x="60" y="-70">req_reject[c][id]?</label>
+			<nail x="80" y="-100"/>
+			<nail x="120" y="-30"/>
+		</transition>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id0"/>
+			<label kind="select" x="-90" y="70">c : client_id_t</label>
+			<label kind="synchronisation" x="-90" y="90">unlock[c][id]?</label>
+			<label kind="assignment" x="-90" y="110">lock_holder[id] = (lock_holder[id] == c ? -1 : lock_holder[id])</label>
+			<nail x="-40" y="70"/>
+			<nail x="40" y="70"/>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">Client</name>
+		<parameter>const client_id_t id</parameter>
+		<declaration>/**
+ * Redlock 客戶端。
+ *
+ * 1. 依序向 N 個節點請求，每次往返耗時 [MIN_NET_DELAY, MAX_NET_DELAY]。
+ * 2. 以自己的本機時鐘 c_client[id] 量測總經過時間。
+ * 3. 若 votes &gt;= QUORUM 且「客戶端量到的」經過時間 &lt; DURATION - DRIFT
+ *    則進入臨界區 InCritical。
+ *
+ * **F9 的注入點**：客戶端量到的時間是 `c_client[id] - client_skew[id]`。
+ * 當 client_skew 因為 NTP 往後跳而變大時，客戶端會**低估**已經過的時間，
+ * 於是租約檢查與 InCritical 的 invariant 都被放寬，客戶端賴在臨界區
+ * 超過鎖的真實有效期——而它自己毫不知情。
+ */
+int[0, N] votes = 0;
+int[0, N] step = 0;
+clock t_step;
+</declaration>
+		<location id="id1" x="-450" y="0">
+			<name x="-470" y="-35">Idle</name>
+		</location>
+		<location id="id2" x="-230" y="0">
+			<name x="-250" y="-35">ReqNode</name>
+			<label kind="invariant" x="-260" y="15">t_step &lt;= MAX_NET_DELAY</label>
+		</location>
+		<location id="id3" x="-30" y="0">
+			<name x="-50" y="-35">CheckNext</name>
+			<committed/>
+		</location>
+		<location id="id4" x="170" y="0">
+			<name x="150" y="-35">Evaluate</name>
+			<committed/>
+		</location>
+		<location id="id5" x="380" y="-100">
+			<name x="370" y="-135">InCritical</name>
+			<label kind="invariant" x="330" y="-85">c_client[id] &lt;= DURATION - DRIFT + client_skew[id]</label>
+		</location>
+		<location id="id6" x="380" y="100">
+			<name x="360" y="65">Releasing</name>
+			<committed/>
+		</location>
+		<init ref="id1"/>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id2"/>
+			<label kind="assignment" x="-430" y="-45">votes = 0,
+step = 0,
+c_client[id] = 0,
+client_skew[id] = 0,
+t_step = 0</label>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-185" y="-60">t_step &gt;= MIN_NET_DELAY</label>
+			<label kind="synchronisation" x="-185" y="-40">req_grant[id][step]!</label>
+			<label kind="assignment" x="-185" y="-20">votes++,
+step++</label>
+			<nail x="-130" y="-30"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-185" y="20">t_step &gt;= MIN_NET_DELAY</label>
+			<label kind="synchronisation" x="-185" y="40">req_reject[id][step]!</label>
+			<label kind="assignment" x="-185" y="60">step++</label>
+			<nail x="-130" y="30"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-150" y="-120">step &lt; N</label>
+			<label kind="assignment" x="-150" y="-100">t_step = 0</label>
+			<nail x="-30" y="-100"/>
+			<nail x="-230" y="-100"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id4"/>
+			<label kind="guard" x="30" y="-20">step == N</label>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id5"/>
+			<label kind="guard" x="180" y="-100">votes &gt;= QUORUM &amp;&amp;
+c_client[id] &lt; DURATION - DRIFT + client_skew[id]</label>
+			<nail x="220" y="-100"/>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id6"/>
+			<label kind="guard" x="180" y="50">votes &lt; QUORUM ||
+c_client[id] &gt;= DURATION - DRIFT + client_skew[id]</label>
+			<label kind="assignment" x="180" y="90">step = 0</label>
+			<nail x="220" y="100"/>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id6"/>
+			<label kind="assignment" x="390" y="-10">step = 0</label>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id6"/>
+			<label kind="guard" x="480" y="80">step &lt; N</label>
+			<label kind="synchronisation" x="480" y="100">unlock[id][step]!</label>
+			<label kind="assignment" x="480" y="120">step++</label>
+			<nail x="460" y="70"/>
+			<nail x="460" y="130"/>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id1"/>
+			<label kind="guard" x="-50" y="180">step == N</label>
+			<nail x="380" y="180"/>
+			<nail x="-450" y="180"/>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">NodeClockAdversary</name>
+		<declaration>/**
+ * 節點時鐘**往前**突跳（NTP step forward / 管理員調錶）。
+ *
+ * 效果：該節點認為 key 比實際更早到期，於是提前開放給別人。
+ *
+ * ⚠️ 這在效果上**等同於 F8（節點崩潰遺失 key）**——Quint 模型已用
+ * crashAndLoseKey 證過同一個違反。保留它是為了做對照組，
+ * 讓查詢可以問「不靠節點異常，光靠客戶端時鐘能不能破壞互斥？」
+ *
+ * 泛化程度（相對於只會跳 node 1 的手動瞄準版本）：
+ *   - select n : 可跳**任一**節點
+ *   - select d : 幅度在 [1, MAX_STEP] 之間非確定性選取
+ *   - 自迴圈 + 計數器：可發動最多 MAX_JUMPS 次
+ */
+</declaration>
+		<location id="id7" x="0" y="0">
+			<name x="-30" y="-34">Ready</name>
+		</location>
+		<init ref="id7"/>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id7"/>
+			<label kind="select" x="60" y="-90">n : node_id_t,
+d : int[1, MAX_STEP]</label>
+			<label kind="guard" x="60" y="-50">node_jumps &lt; MAX_JUMPS</label>
+			<label kind="assignment" x="60" y="-30">node_ofs[n] = node_ofs[n] + d,
+node_jumps++</label>
+			<nail x="40" y="-60"/>
+			<nail x="-40" y="-60"/>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">ClientClockAdversary</name>
+		<declaration>/**
+ * 客戶端時鐘**往後**突跳 —— **這是 F9 的本體**。
+ *
+ * 對應現實：`Date.now()` 被 NTP step 或管理員往回調。Redlock 的
+ * driftFactor 只補償**速率漂移**，完全不處理**階躍**。
+ *
+ * 效果：客戶端量到的經過時間 = c_client[id] - client_skew[id]，
+ * 一旦 client_skew 變大，客戶端就**低估**已流逝的時間，
+ * 於是它相信租約還沒到期而繼續留在臨界區——但節點上的 key
+ * 早已依真實時間自然過期，另一個客戶端可以**完全合法地**取得 quorum。
+ *
+ * 關鍵：這條路徑**不需要任何節點異常**（node_jumps == 0），
+ * 因此它證明 F9 是獨立於 F8 的問題，而不是 F8 的換皮。
+ */
+</declaration>
+		<location id="id8" x="0" y="0">
+			<name x="-30" y="-34">Ready</name>
+		</location>
+		<init ref="id8"/>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id8"/>
+			<label kind="select" x="60" y="-90">c : client_id_t,
+d : int[1, MAX_STEP]</label>
+			<label kind="guard" x="60" y="-50">client_jumps &lt; MAX_JUMPS</label>
+			<label kind="assignment" x="60" y="-30">client_skew[c] = client_skew[c] + d,
+client_jumps++</label>
+			<nail x="40" y="-60"/>
+			<nail x="-40" y="-60"/>
+		</transition>
+	</template>
+	<system>// 具現化
+Node0 = RedisNode(0);
+Node1 = RedisNode(1);
+Node2 = RedisNode(2);
+
+Client0 = Client(0);
+Client1 = Client(1);
+
+NodeAdv   = NodeClockAdversary();
+ClientAdv = ClientClockAdversary();
+
+system Node0, Node1, Node2, Client0, Client1, NodeAdv, ClientAdv;
+</system>
+	<queries>
+		<query>
+			<formula>E&lt;&gt; (Client0.InCritical &amp;&amp; Client1.InCritical &amp;&amp; node_jumps == 0 &amp;&amp; client_jumps == 0)</formula>
+			<comment>【陰性對照】沒有任何時鐘異常時，互斥性必須成立。預期：NOT satisfied。</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; (Client0.InCritical &amp;&amp; Client1.InCritical &amp;&amp; node_jumps == 0)</formula>
+			<comment>【F9 本體】只靠客戶端時鐘往後跳、完全不動任何節點，就能破壞互斥。預期：SATISFIED。</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; (Client0.InCritical &amp;&amp; Client1.InCritical &amp;&amp; client_jumps == 0)</formula>
+			<comment>【對照：F8 等價變體】只靠節點時鐘往前跳（≡ 節點提前遺失 key）也能破壞互斥。預期：SATISFIED。</comment>
+		</query>
+		<query>
+			<formula>A[] not (Client0.InCritical &amp;&amp; Client1.InCritical)</formula>
+			<comment>整體互斥性安全性質。預期：NOT satisfied（在允許時鐘突跳的環境下）。</comment>
+		</query>
+		<query>
+			<formula>A[] not deadlock</formula>
+			<comment>模型健全性：不得有非預期的死鎖。預期：SATISFIED。</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; Client0.InCritical</formula>
+			<comment>活性 sanity check：Client 0 確實取得過鎖。預期：SATISFIED。</comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; Client1.InCritical</formula>
+			<comment>活性 sanity check：Client 1 確實取得過鎖。預期：SATISFIED。</comment>
+		</query>
+	</queries>
+</nta>

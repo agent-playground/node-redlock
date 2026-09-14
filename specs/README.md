@@ -16,13 +16,14 @@
 
 ## 檔案
 
-| 檔案                      | 內容                                                                                                                      |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `redlock.qnt`             | 參數化規格（`const` 未實例化，單獨 `quint run` 會失敗）。型別、純函數、狀態機、不變式、witness。**不含任何 `run` 測試**。 |
-| `redlockTest.qnt`         | 具體實例模組 + `run` 測試。要跑任何東西都是跑這個檔案，用 `--main=<實例>` 選情境。                                        |
-| `traces/*.itf.json`       | **as-fixed 模型**仍然找得到的反例軌跡（F3 / F4 / F8）。                                                                   |
-| `traces/as-is/*.itf.json` | **修復前**模型的 7 條反例軌跡（歷史證據，見該目錄的 README）。                                                            |
-| `README.md`               | 本檔：驗證報告、覆蓋範圍、CI 草稿、工具鏈限制。                                                                           |
+| 檔案                      | 內容                                                                                                                                                                  |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redlock.qnt`             | 參數化規格（`const` 未實例化，單獨 `quint run` 會失敗）。型別、純函數、狀態機、不變式、witness。**不含任何 `run` 測試**。                                             |
+| `redlockTest.qnt`         | 具體實例模組 + `run` 測試。要跑任何東西都是跑這個檔案，用 `--main=<實例>` 選情境。                                                                                    |
+| `traces/*.itf.json`       | **as-fixed 模型**仍然找得到的反例軌跡（F3 / F4 / F8）。                                                                                                               |
+| `traces/as-is/*.itf.json` | **修復前**模型的 7 條反例軌跡（歷史證據，見該目錄的 README）。                                                                                                        |
+| `uppaal/`                 | **F9 專屬的 UPPAAL 時間自動機模型**（多獨立實數時鐘）＋ TCTL 查詢 ＋ `verify.sh` 閘門。Quint 的單一時鐘表達不出 F9，這一側才回答得了（見 `specs/uppaal/README.md`）。 |
+| `README.md`               | 本檔：驗證報告、覆蓋範圍、CI 草稿、工具鏈限制。                                                                                                                       |
 
 ## 如何重跑（完整驗證紀錄）
 
@@ -183,18 +184,18 @@ reportedSignalError was witnessed in 31 trace(s) out of 10000 explored (0.31%)
 
 ## 已涵蓋（REQ-7）
 
-| 項目                                         | 說明                                                                                                                                                    |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **F1** validity 檢查（**已修復**）           | `completeAcquire` 的 guard `acquireBelieved(cs) > now`；耗盡的那一支走 `abortAcquireExpired`（補償釋放 ＋ 回到 IDLE，單一原子動作）。                   |
-| **F2** ACQUIRE 的擋鎖條件（**已修復**）      | `acquireBlockedBy` 改為 `keyExists(e) and e.value != v`——只有別人的 key 才擋。`selfBlocked` 保留為可檢查的觀測點（恆 false）。                          |
-| **F3** extend 不修復少數節點                 | `EXTEND_SCRIPT`。`attemptExtend` 只更新投贊成的節點；`permits` 只增不減，真實覆蓋率由 `permitsOf` 以 `nodes` 過濾。**未修復（演算法固有）**。           |
-| **F4** abort 諮詢式 / 臨界區重疊             | routine 三態（`UNCHECKED` / `CHECKED` / `CHECKED_LATE`）＋ `criticalWork` 讓鎖可在臨界區執行途中失效。**安全性結論由此條承載；未修復**。                |
-| **F5** extend 的 validity 檢查（**已修復**） | `completeExtend` 的 guard `extendBelieved(cs) > now`；耗盡的那一支走 `abortExtendExpired`（**主動釋放**已失效的鎖）。                                   |
-| **F7** 錯誤回報優先序（**已修復**）          | `completeRelease` 設定 `reported`：signal.error 優先於 release error。**述詞必須寫在 `reported` 上**，寫在 `releaseFailed ∧ signalAbort` 上會誤判未修。 |
-| **F8** 節點崩潰遺失 key（Kleppmann）         | `crashAndLoseKey`，由 `ENABLE_CRASH_LOSS` 控制（**預設 false**）。                                                                                      |
-| **F9** 時鐘跳躍                              | `jumpClock`，由 `ENABLE_CLOCK_JUMP` 控制（**預設 false**）。                                                                                            |
-| 三層時間                                     | 全域 `now` ＋ 每節點 key 的真實到期 ＋ 每 client 相信的 `expiration`。                                                                                  |
-| quorum 前提                                  | `redlockAssumptions::quorumAssumptionTest`（`2f < n`、`quorum = ⌊n/2⌋+1`）。                                                                            |
+| 項目                                         | 說明                                                                                                                                                            |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **F1** validity 檢查（**已修復**）           | `completeAcquire` 的 guard `acquireBelieved(cs) > now`；耗盡的那一支走 `abortAcquireExpired`（補償釋放 ＋ 回到 IDLE，單一原子動作）。                           |
+| **F2** ACQUIRE 的擋鎖條件（**已修復**）      | `acquireBlockedBy` 改為 `keyExists(e) and e.value != v`——只有別人的 key 才擋。`selfBlocked` 保留為可檢查的觀測點（恆 false）。                                  |
+| **F3** extend 不修復少數節點                 | `EXTEND_SCRIPT`。`attemptExtend` 只更新投贊成的節點；`permits` 只增不減，真實覆蓋率由 `permitsOf` 以 `nodes` 過濾。**未修復（演算法固有）**。                   |
+| **F4** abort 諮詢式 / 臨界區重疊             | routine 三態（`UNCHECKED` / `CHECKED` / `CHECKED_LATE`）＋ `criticalWork` 讓鎖可在臨界區執行途中失效。**安全性結論由此條承載；未修復**。                        |
+| **F5** extend 的 validity 檢查（**已修復**） | `completeExtend` 的 guard `extendBelieved(cs) > now`；耗盡的那一支走 `abortExtendExpired`（**主動釋放**已失效的鎖）。                                           |
+| **F7** 錯誤回報優先序（**已修復**）          | `completeRelease` 設定 `reported`：signal.error 優先於 release error。**述詞必須寫在 `reported` 上**，寫在 `releaseFailed ∧ signalAbort` 上會誤判未修。         |
+| **F8** 節點崩潰遺失 key（Kleppmann）         | `crashAndLoseKey`，由 `ENABLE_CRASH_LOSS` 控制（**預設 false**）。                                                                                              |
+| **F9** 時鐘跳躍                              | ⚠️ Quint 側的 `jumpClock`（`ENABLE_CLOCK_JUMP`）是**空開關**，見「F9 的建模缺陷」。**F9 由 `specs/uppaal/` 的時間自動機模型回答**（實測已證實獨立於 F8 成立）。 |
+| 三層時間                                     | 全域 `now` ＋ 每節點 key 的真實到期 ＋ 每 client 相信的 `expiration`。                                                                                          |
+| quorum 前提                                  | `redlockAssumptions::quorumAssumptionTest`（`2f < n`、`quorum = ⌊n/2⌋+1`）。                                                                                    |
 
 ## 刻意未涵蓋（REQ-7）
 
@@ -284,10 +285,11 @@ client 相信的到期時間是 `start + DURATION - DRIFT`，而節點端 key �
 | **F6** timer 洩漏                    | ❌（Quint 之外）              | 同左：由 `specs/oracle/counterexamples.test.mjs` 的回歸測試涵蓋                | **已修復**（不在 Quint 內）                   |
 | **F7** release 失敗遮蔽錯誤          | ✅ 反例（10 步）              | **不再可違反** → `abortReasonNeverMasked`（述詞已改寫，見下）                  | **已修復**                                    |
 | **F8** 節點崩潰遺失 key（Kleppmann） | ✅ 反例（8 步）               | ✅ **仍有反例**                                                                | 環境假設，修復未觸及（**需 F8 開關**）        |
-| **F9** 時鐘跳躍                      | ❌ 模型無法證否               | 同左                                                                           | **見「F9 的建模缺陷」**                       |
+| **F9** 時鐘跳躍                      | ❌ Quint 表達不出             | ✅ **已在 UPPAAL 側證實**（見下）                                              | 設計層問題；**獨立於 F8 成立**                |
 
 計數：**3 條經模型檢查確認已修復**（F1、F5、F7）＋ **1 條 F2**（自我阻塞不再可違反）、
-**3 條仍有反例**（F3、F4、F8）、**1 條在 Quint 之外**（F6）、**1 條模型表達不出來**（F9）。
+**3 條仍有反例**（F3、F4、F8）、**1 條在 Quint 之外但已由神諭測試涵蓋**（F6）、
+**1 條 Quint 表達不出、改由 UPPAAL 時間自動機回答**（F9）。
 
 > **F7 的述詞必須改寫，否則會得出假結論。** as-is 版本寫的是
 > `not(releaseFailed and signalAbort)`——那描述的是**兩件事同時發生**，
@@ -425,7 +427,7 @@ caller」是**同一個 `await` 的兩半**——`await this._execute(releaseScr
 > **「witness 是 0%」是模型過度近似的訊號，不是「這個情況不會發生」的結論。**
 > as-fixed 版本的四個 witness 全部非零，就是照著這條教訓設計的。
 
-## F9 的建模缺陷（實測後確認，**保留為獨立後續項**）
+## F9 的建模缺陷（Quint 側）與它在 UPPAAL 側的解答
 
 `ENABLE_CLOCK_JUMP` 這個開關**實際上是空的**：它開與不開，可達狀態集完全相同。
 
@@ -453,12 +455,43 @@ var nodeNow:   int   // Redis 伺服器時鐘；SET ... PX 的到期與 keyExist
 如此，一次向前跳躍會讓 client 相信鎖已過期（或相信自己還有很久）
 而節點上的 key 仍在——F9 才可證否。
 
-**裁定結果：本項保留為獨立的後續工作項，不在本次修訂內。** 理由：它會改變
+**裁定結果（Quint 側）：雙時鐘改造保留為獨立的後續工作項。** 理由：它會改變
 **建模決策 5**、牽動 `believesHolds` / `acquireBelieved` / `keyExists` 約十餘處，
-是一個可獨立審查的單位；把它與 F2 的保真度修正混在同一顆 diff 裡，會讓審查者
-無法分辨「哪個改動造成了哪個反例的變化」。因此本規格在本次修訂中
-**仍然保留空的 `ENABLE_CLOCK_JUMP`**，並在此明確標示——**不要把它當成
-「F9 已被涵蓋」**。
+是一個可獨立審查的單位。因此本規格**仍然保留空的 `ENABLE_CLOCK_JUMP`**——
+**在 Quint 這一側，不要把它當成「F9 已被涵蓋」**。
+
+### ✅ F9 已在 UPPAAL 側獲得解答（實測，非推測）
+
+與其把 Quint 改造成雙時鐘，本專案改用**原生就是多時鐘**的模型檢驗器。
+完整模型、查詢與閘門腳本在 [`specs/uppaal/`](./uppaal/README.md)。
+
+實測結論（UPPAAL 5.0.0，7 條查詢約 128 秒，`specs/uppaal/verify.sh` 全綠）：
+
+| 查詢                                                         | 結果              | 意義                                                                |
+| ------------------------------------------------------------ | ----------------- | ------------------------------------------------------------------- |
+| `E<> (兩者同時在臨界區 && node_jumps==0 && client_jumps==0)` | **NOT satisfied** | 沒有任何時鐘異常時，互斥**成立**（陰性對照）                        |
+| `E<> (兩者同時在臨界區 && node_jumps==0)`                    | **satisfied**     | **F9 本體**：只靠客戶端時鐘往後跳、**完全不動任何節點**，互斥即崩潰 |
+| `E<> (兩者同時在臨界區 && client_jumps==0)`                  | satisfied         | 對照：節點時鐘往前跳（效果 ≡ **F8**）                               |
+
+**最短反例只需要客戶端時鐘往後跳 5 毫秒**：Client 0 於 t=3 進入臨界區，
+三把 key 依真實時間於 t=21/22/23 自然到期，Client 1 於 t=23 **完全合法地**
+取得 quorum 並進入臨界區——而 Client 0 量到的經過時間是 18ms（剛好卡在租約上限），
+真實已過 23ms。**沒有節點崩潰、沒有資料遺失、沒有網路分割。**
+
+> **為什麼這一條非做不可**：如果只建模「節點時鐘往前跳」，得到的反例與 **F8
+> 在觀測上不可區分**（節點提前失去 key ≡ 節點崩潰遺失 key），等於換個觸發器
+> 把 F8 重證一次。上表第二列——`node_jumps == 0` 這個條件——才是把 **F9 從 F8
+> 分離出來**的關鍵，也是 F9 值得單獨列一條的理由。
+
+> **UPPAAL 的硬限制（踩過的坑）**：UPPAAL 的 clock **不能被位移**，
+> `c_node[1] := c_node[1] + DELTA` 會被型別檢查擋下
+> （`clock cannot be read as double value`）。時鐘突跳必須改用**整數偏移量**
+> 搬到 guard 的常數側。詳見 `specs/uppaal/README.md` §2。
+
+> **⚠️ `verifyta` 的退出碼不可信**：它對「Formula is NOT satisfied」**仍回傳 0**，
+> 只有模型有型別／語法錯誤時才回傳非 0。因此閘門必須**逐條解析輸出**
+> 並與預期比對——這與 `quint run --witnesses` 在 0% 時仍 exit 0 是同一類陷阱。
+> `specs/uppaal/verify.sh` 即為此而寫，並已做過紅綠對照。
 
 ## 規模與界（REQ-11 / REQ-12）
 

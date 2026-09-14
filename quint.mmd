@@ -1,0 +1,11 @@
+flowchart TD
+    A["Quint 形式化數學模型<br/>(specs/redlock.qnt)"] -->|證明反例可達| B["假 Redis 神諭測試<br/>(counterexamples.test.mjs)"]
+    
+    subgraph 語意對等閉環
+        B <-->|透過 makeNodes 調用| C["可控假節點叢集<br/>(fakeRedis.mjs)"]
+        C <-->|14 項邊界情境雙軌比對| D["Lua 語意公證測試<br/>(lua-parity.test.mjs)"]
+        D <-->|執行真實 Script 原文| E[("真實 Redis 7 實例")]
+    end
+    
+    B -->|接地至真機環境| F["端到端真機重現<br/>(real-redis.test.mjs)"]
+    F <--> E
