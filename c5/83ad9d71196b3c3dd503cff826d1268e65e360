@@ -1,0 +1,16 @@
+specs/uppaal/README.md
+  h_1b119f25eaf333 157-196
+specs/uppaal/redlock_f9.q
+  h_1b119f25eaf333 53-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c583ad9d71196b3c3dd503cff826d1268e65e360",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
