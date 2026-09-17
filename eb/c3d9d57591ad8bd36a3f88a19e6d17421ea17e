@@ -1,0 +1,14 @@
+specs/uppaal/f9_trace.xtr
+  h_1b119f25eaf333 1-556
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ebc3d9d57591ad8bd36a3f88a19e6d17421ea17e",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
