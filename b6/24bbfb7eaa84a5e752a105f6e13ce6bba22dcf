@@ -1,0 +1,18 @@
+specs/FM-agent/231-fm-agent-adoption-analysis.md
+  h_1b119f25eaf333 1-231
+src/fixes.test.ts
+  h_1b119f25eaf333 550-574
+src/index.ts
+  h_1b119f25eaf333 559-572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b624bbfb7eaa84a5e752a105f6e13ce6bba22dcf",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
