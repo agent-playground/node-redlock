@@ -547,3 +547,28 @@ test("settings pass-through: lock.extend honours the retryCount it is given", as
     "retryCount: 0 means exactly 1 attempt on each of the 3 clients"
   );
 });
+
+test("Liveness defect: acquire() throws ExecutionError instead of hanging when even nodes tie", async (t) => {
+  // In an even-node configuration (N=2, quorumSize=2), a 1:1 tie vote
+  // (1 for, 1 against) must resolve as a failure ("against") rather than
+  // leaving the outer attempt Promise permanently pending.
+  const clients = makeClients(2);
+  clients[1].set("tie-resource", "OCCUPIED_BY_ANOTHER_CLIENT", 10_000);
+
+  const redlock = new Redlock(clients as unknown as Client[], {
+    retryCount: 0,
+    retryDelay: 0,
+    retryJitter: 0,
+  });
+
+  await t.throwsAsync(
+    async () => {
+      await redlock.acquire(["tie-resource"], 1000);
+    },
+    {
+      instanceOf: ExecutionError,
+      message:
+        /The operation was unable to achieve a quorum during its retry window\./,
+    }
+  );
+});

@@ -556,6 +556,20 @@ export default class Redlock extends EventEmitter {
           stats.membershipSize
         ) {
           done();
+
+          // In an even-node configuration, a tie vote can result in all votes
+          // being collected without either side reaching quorumSize. Since a quorum
+          // in favor was not reached, the attempt has failed and must resolve as "against".
+          if (
+            stats.votesFor.size < stats.quorumSize &&
+            stats.votesAgainst.size < stats.quorumSize
+          ) {
+            resolve({
+              vote: "against",
+              stats: statsPromise,
+              start,
+            });
+          }
         }
       };
 
