@@ -1,0 +1,22 @@
+specs/LEAN_VERIFICATION_STUDY.md
+  h_1b119f25eaf333 153-176
+specs/lean/Redlock/Basic.lean
+  h_1b119f25eaf333 198-221
+specs/lean/Redlock/Counterexamples.lean
+  h_1b119f25eaf333 9-10,23,29-46,51,53,55-56,63-85,90,92,94-95,103-123,130,132,136-137
+specs/lean/Redlock/Timed.lean
+  h_1b119f25eaf333 166-189
+specs/lean/verify.sh
+  h_1b119f25eaf333 1-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1d35e9db93ce6e60aa2a64fa58dfd33f6f18c587",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
