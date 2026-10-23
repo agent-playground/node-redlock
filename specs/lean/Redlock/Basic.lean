@@ -195,6 +195,30 @@ inductive Reachable : State → Prop where
   | init : Reachable initState
   | step {s s' : State} {a : Action} : Reachable s → Step s a s' → Reachable s'
 
+/-- 循序執行 Action 清單 -/
+def runTrace (s : State) : List Action → Option State
+  | [] => some s
+  | a :: rest =>
+      match nextState s a with
+      | some s' => runTrace s' rest
+      | none => none
+
+/-- 通用可達性定理：若從可達狀態經合法 trace 執行到達 s'，則 s' 亦為可達 -/
+theorem reachable_of_runTrace (trace : List Action) {s s' : State}
+    (hr : Reachable s) (h : runTrace s trace = some s') : Reachable s' := by
+  induction trace generalizing s with
+  | nil =>
+      dsimp [runTrace] at h
+      cases h
+      exact hr
+  | cons a rest ih =>
+      dsimp [runTrace] at h
+      split at h
+      · rename_i s_next h_step
+        have hr_next : Reachable s_next := Reachable.step hr (Step.of_next h_step)
+        exact ih hr_next h
+      · contradiction
+
 /-- 客戶端輔助識別常數 -/
 def c0 : ClientId := ⟨0, by decide⟩
 def c1 : ClientId := ⟨1, by decide⟩

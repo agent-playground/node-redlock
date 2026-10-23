@@ -163,6 +163,30 @@ inductive TimedReachable : TimedState → Prop where
   | init : TimedReachable initTimedState
   | step {s s' : TimedState} {a : TimedAction} : TimedReachable s → TimedStep s a s' → TimedReachable s'
 
+/-- 循序執行多時鐘 Action 清單 -/
+def runTimedTrace (s : TimedState) : List TimedAction → Option TimedState
+  | [] => some s
+  | a :: rest =>
+      match nextTimedState s a with
+      | some s' => runTimedTrace s' rest
+      | none => none
+
+/-- 通用可達性定理：若從可達狀態經合法 timed trace 執行到達 s'，則 s' 亦為可達 -/
+theorem reachable_of_runTimedTrace (trace : List TimedAction) {s s' : TimedState}
+    (hr : TimedReachable s) (h : runTimedTrace s trace = some s') : TimedReachable s' := by
+  induction trace generalizing s with
+  | nil =>
+      dsimp [runTimedTrace] at h
+      cases h
+      exact hr
+  | cons a rest ih =>
+      dsimp [runTimedTrace] at h
+      split at h
+      · rename_i s_next h_step
+        have hr_next : TimedReachable s_next := TimedReachable.step hr (TimedStep.of_next h_step)
+        exact ih hr_next h
+      · contradiction
+
 def c0 : ClientId := ⟨0, by decide⟩
 def c1 : ClientId := ⟨1, by decide⟩
 def n0 : NodeId := ⟨0, by decide⟩
