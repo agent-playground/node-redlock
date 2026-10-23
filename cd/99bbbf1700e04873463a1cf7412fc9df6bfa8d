@@ -1,0 +1,32 @@
+specs/LEAN_VERIFICATION_STUDY.md
+  h_1b119f25eaf333 1-152
+specs/lean/.gitignore
+  h_1b119f25eaf333 1
+specs/lean/Main.lean
+  h_1b119f25eaf333 1-5
+specs/lean/Redlock.lean
+  h_1b119f25eaf333 1-3
+specs/lean/Redlock/Basic.lean
+  h_1b119f25eaf333 1-215
+specs/lean/Redlock/Counterexamples.lean
+  h_1b119f25eaf333 1-195
+specs/lean/Redlock/Timed.lean
+  h_1b119f25eaf333 1-177
+specs/lean/lake-manifest.json
+  h_1b119f25eaf333 1-6
+specs/lean/lakefile.lean
+  h_1b119f25eaf333 1-12
+specs/lean/lean-toolchain
+  h_1b119f25eaf333 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cd99bbbf1700e04873463a1cf7412fc9df6bfa8d",
+  "prompts": {},
+  "humans": {
+    "h_1b119f25eaf333": {
+      "author": "philipz <philipzheng@gmail.com>"
+    }
+  }
+}
