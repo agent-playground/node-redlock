@@ -145,6 +145,30 @@ Please view the (very concise) source code or TypeScript definitions for a detai
 
 Please see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for information on developing, running, and testing this library.
 
+#### Building and testing
+
+Build the library with `yarn build` (or `npm run build`), which compiles `src` with `tsc` into `dist/esm` and `dist/cjs`.
+
+Run the tests with `yarn test` (or `npm test`). The tests run against the compiled files in `dist/esm`, so build first.
+
+The tests need Redis: they connect to the single instances and clusters defined in `docker-compose.yml` by their service names, so run them inside Docker Compose rather than directly on your machine. Start the full environment, which installs dependencies, builds, and re-runs the tests on changes, with:
+
+```bash
+docker compose up
+```
+
+Or run the tests once with:
+
+```bash
+docker compose run --rm runner yarn test
+```
+
+CI (`.github/workflows/ci.yml`) runs these checks on pushes and pull requests to `main`:
+
+- Lint: `yarn lint` (Prettier and ESLint)
+- Build: `yarn build`
+- Test: `yarn test` against the Redis services in `docker-compose.yml`
+
 ### High-Availability Recommendations
 
 - Use at least 3 independent servers or clusters
